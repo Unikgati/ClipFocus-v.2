@@ -2,14 +2,14 @@ import Foundation
 import CoreGraphics
 
 /// Easing curve style for camera pan and zoom transitions
-public enum ZoomEasingCurve: String, Codable, Sendable {
+public enum ZoomEasingCurve: String, Codable, Sendable, Equatable {
     case easeInOutCubic = "ease_in_out_cubic"
     case springSmooth = "spring_smooth"
     case linear = "linear"
 }
 
 /// Zoom Effect style matching FocuSee (2D Zoom vs 3D Motion)
-public enum ZoomEffectType: String, CaseIterable, Codable, Sendable {
+public enum ZoomEffectType: String, CaseIterable, Codable, Sendable, Equatable {
     case zoom2D = "2D Zoom"
     case motion3D = "3D Motion"
 }
@@ -20,7 +20,7 @@ public enum ZoomEffectType: String, CaseIterable, Codable, Sendable {
 /// - `auto`: Dynamic 3D tilt that follows the focus point direction (like FocuSee).
 ///   Zooming to the top-right tilts the card toward top-right naturally.
 /// - `custom`: Full manual control via individual pitch/yaw/roll values stored per keyframe
-public enum TiltPreset: String, CaseIterable, Codable, Sendable {
+public enum TiltPreset: String, CaseIterable, Codable, Sendable, Equatable {
     case flat = "Flat"
     case auto = "Auto"
     case custom = "Custom"
@@ -39,12 +39,17 @@ public enum TiltPreset: String, CaseIterable, Codable, Sendable {
         case .flat:
             return (pitch: 0.0, yaw: 0.0, roll: 0.0)
         case .auto:
-            // Dynamic 3D: tilt follows focus point direction — the core of FocuSee's 3D magic.
-            // When zoomed into top-right, the card tilts as if you're looking at it from that angle.
-            let pitch = (focusPoint.y - 0.5) * -16.0
-            let yaw = (focusPoint.x - 0.5) * 18.0
-            let roll = ((focusPoint.x - 0.5) * (focusPoint.y - 0.5)) * -8.0
-            return (pitch: pitch, yaw: yaw, roll: roll)
+            // Dynamic FocuSee 3D: clean, natural perspective angles following focus direction
+            let dx = focusPoint.x - 0.5
+            let dy = focusPoint.y - 0.5
+            if abs(dx) < 0.05 && abs(dy) < 0.05 {
+                return (pitch: -7.0, yaw: 8.5, roll: -2.0)
+            } else {
+                let pitch = dy * -28.0
+                let yaw = dx * 32.0
+                let roll = (dx * dy) * -16.0
+                return (pitch: pitch, yaw: yaw, roll: roll)
+            }
         case .custom:
             return (pitch: customPitch, yaw: customYaw, roll: customRoll)
         }
@@ -52,7 +57,7 @@ public enum TiltPreset: String, CaseIterable, Codable, Sendable {
 }
 
 /// A keyframe representing zoom depth and focus position on the screen canvas
-public struct ZoomKeyframe: Codable, Identifiable, Sendable {
+public struct ZoomKeyframe: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID
     public var startTime: TimeInterval
     public var duration: TimeInterval
@@ -104,8 +109,8 @@ public struct ZoomKeyframe: Codable, Identifiable, Sendable {
         focusPoint: CGPoint,
         scale: CGFloat = 1.0,
         easing: ZoomEasingCurve = .springSmooth,
-        effectType: ZoomEffectType = .motion3D,
-        tiltPreset: TiltPreset = .auto,
+        effectType: ZoomEffectType = .zoom2D,
+        tiltPreset: TiltPreset = .flat,
         customPitch: Double = 0.0,
         customYaw: Double = 0.0,
         customRoll: Double = 0.0,
@@ -146,10 +151,9 @@ public struct ZoomKeyframe: Codable, Identifiable, Sendable {
         focusPoint = try container.decode(CGPoint.self, forKey: .focusPoint)
         scale = try container.decode(CGFloat.self, forKey: .scale)
         easing = try container.decodeIfPresent(ZoomEasingCurve.self, forKey: .easing) ?? .springSmooth
-        effectType = try container.decodeIfPresent(ZoomEffectType.self, forKey: .effectType) ?? .motion3D
-        // Migration: legacy presets map to .auto (the closest natural 3D behavior)
+        effectType = try container.decodeIfPresent(ZoomEffectType.self, forKey: .effectType) ?? .zoom2D
         let rawPreset = try container.decodeIfPresent(TiltPreset.self, forKey: .tiltPreset)
-        tiltPreset = rawPreset ?? .auto
+        tiltPreset = rawPreset ?? .flat
         customPitch = try container.decodeIfPresent(Double.self, forKey: .customPitch) ?? 0.0
         customYaw = try container.decodeIfPresent(Double.self, forKey: .customYaw) ?? 0.0
         customRoll = try container.decodeIfPresent(Double.self, forKey: .customRoll) ?? 0.0
