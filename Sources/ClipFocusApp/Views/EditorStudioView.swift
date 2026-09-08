@@ -462,41 +462,6 @@ public struct EditorStudioView: View {
             
             Divider().overlay(Color.white.opacity(0.08))
             
-            // Mode: [ Auto ]  [ Manual ]
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        appState.isManualMode = false
-                    }) {
-                        Text("Auto")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 5)
-                            .background(!appState.isManualMode ? Color.blue : Color.white.opacity(0.08))
-                            .foregroundStyle(!appState.isManualMode ? .white : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    
-                    Button(action: {
-                        appState.isManualMode = true
-                    }) {
-                        Text("Manual")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 5)
-                            .background(appState.isManualMode ? Color.blue : Color.white.opacity(0.08))
-                            .foregroundStyle(appState.isManualMode ? .white : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-                
-                Text("You can manually configure 3D Motion effects.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            
             // 3D Tilt Mode (FocuSee Advanced 3D System)
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -713,7 +678,7 @@ public struct EditorStudioView: View {
                     }
                     Spacer()
                     Button(action: {
-                        appState.seek(to: kf.startTime)
+                        appState.selectKeyframe(id: kf.id)
                     }) {
                         Image(systemName: "arrow.right.circle.fill")
                             .foregroundColor(.blue)
@@ -732,6 +697,10 @@ public struct EditorStudioView: View {
                 .padding(8)
                 .background(Color.white.opacity(appState.selectedKeyframeID == kf.id ? 0.12 : 0.05))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    appState.selectKeyframe(id: kf.id)
+                }
             }
         }
         }
@@ -1363,8 +1332,8 @@ struct KeyframeTimelineItemView: View {
                         .onChanged { value in
                             appState.isScrubbing = true
                             if appState.selectedKeyframeID != kf.id {
-                                appState.selectedKeyframeID = kf.id
                                 activeSidebarTab = "camera"
+                                appState.selectKeyframe(id: kf.id)
                             }
                             if dragStart_StartSec == nil {
                                 dragStart_StartSec = kf.startTime
@@ -1410,8 +1379,8 @@ struct KeyframeTimelineItemView: View {
                         .onChanged { value in
                             appState.isScrubbing = true
                             if appState.selectedKeyframeID != kf.id {
-                                appState.selectedKeyframeID = kf.id
                                 activeSidebarTab = "camera"
+                                appState.selectKeyframe(id: kf.id)
                             }
                             if dragStart_StartSec == nil {
                                 dragStart_StartSec = kf.startTime
@@ -1433,11 +1402,6 @@ struct KeyframeTimelineItemView: View {
                             }
                         }
                 )
-                .onTapGesture {
-                    activeSidebarTab = "camera"
-                    appState.selectedKeyframeID = kf.id
-                    appState.seek(to: kf.startTime, accurate: true)
-                }
                 
                 // Right Trim Handle (always active, changes cursor to resizeLeftRight)
                 ZStack {
@@ -1462,8 +1426,8 @@ struct KeyframeTimelineItemView: View {
                         .onChanged { value in
                             appState.isScrubbing = true
                             if appState.selectedKeyframeID != kf.id {
-                                appState.selectedKeyframeID = kf.id
                                 activeSidebarTab = "camera"
+                                appState.selectKeyframe(id: kf.id)
                             }
                             if dragStart_DurSec == nil {
                                 dragStart_DurSec = kf.duration
@@ -1491,5 +1455,13 @@ struct KeyframeTimelineItemView: View {
         .frame(width: blockW, height: 24)
         .shadow(color: isSelected ? Color.blue.opacity(0.4) : Color.clear, radius: 4, y: 1)
         .position(x: xPos + (blockW / 2), y: 15)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture()
+                .onEnded {
+                    activeSidebarTab = "camera"
+                    appState.selectKeyframe(id: kf.id)
+                }
+        )
     }
 }
