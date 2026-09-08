@@ -1241,6 +1241,7 @@ public struct EditorStudioView: View {
                             .frame(height: 32)
                             .contentShape(Rectangle())
                             .onTapGesture {
+                                appState.clearSelection()
                                 if let sec = hoverTimelineSec {
                                     appState.seek(to: sec, accurate: true)
                                 }
@@ -1319,6 +1320,7 @@ public struct EditorStudioView: View {
                             .frame(height: 28)
                             .contentShape(Rectangle())
                             .onTapGesture {
+                                appState.clearSelection()
                                 if let sec = hoverTimelineSec {
                                     appState.seek(to: sec, accurate: true)
                                 }

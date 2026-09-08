@@ -34,6 +34,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 break
             }
         }
+        if let editArg = CommandLine.arguments.first(where: { $0.starts(with: "--edit=") }) {
+            let path = editArg.replacingOccurrences(of: "--edit=", with: "")
+            let url = URL(fileURLWithPath: path)
+            appState.loadRecordedVideo(url: url)
+        } else if let editIdx = CommandLine.arguments.firstIndex(of: "--edit"), editIdx + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[editIdx + 1]
+            let url = URL(fileURLWithPath: path)
+            appState.loadRecordedVideo(url: url)
+        }
         WindowManager.shared.start(with: appState)
     }
     

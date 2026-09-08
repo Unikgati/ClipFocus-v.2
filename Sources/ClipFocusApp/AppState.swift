@@ -131,6 +131,8 @@ public final class AppState: @unchecked Sendable {
     public func selectKeyframe(id: UUID) {
         guard let kf = zoomKeyframes.first(where: { $0.id == id }) else { return }
         selectedKeyframeID = id
+        selectedSegmentID = nil
+        selectedTrackType = nil
         selectedEffectType = kf.effectType
         selectedTiltPreset = kf.tiltPreset
         customPitch = kf.customPitch
@@ -1669,6 +1671,8 @@ public final class AppState: @unchecked Sendable {
             zoomKeyframes.sort { $0.startTime < $1.startTime }
         }
         selectedKeyframeID = keyframe.id
+        selectedSegmentID = nil
+        selectedTrackType = nil
         evaluateCurrentZoom()
     }
     
