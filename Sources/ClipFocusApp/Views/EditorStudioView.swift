@@ -25,7 +25,7 @@ public struct EditorStudioView: View {
     @State private var hoverTimelineSec: Double? = nil
     @State private var isHoveringTimeline: Bool = false
     @State private var isZoomTrackHovered: Bool = false
-    @State private var timelineHeight: CGFloat = 165
+    @State private var timelineHeight: CGFloat = 180
     @State private var isHoveringSplitter: Bool = false
     @State private var dragStartTimelineHeight: CGFloat? = nil
     @State private var keyMonitor: Any? = nil
@@ -98,6 +98,25 @@ public struct EditorStudioView: View {
                     case 49: // Spacebar -> Play / Pause
                         appState.togglePlayback()
                         return nil
+                    case 11: // B key with Cmd (Cmd+B) -> Razor Cut / Split at Playhead
+                        if event.modifierFlags.contains(.command) {
+                            appState.splitAtCurrentTime()
+                            return nil
+                        }
+                    case 6: // Z key with Cmd (Cmd+Z = Undo, Cmd+Shift+Z = Redo)
+                        if event.modifierFlags.contains(.command) {
+                            if event.modifierFlags.contains(.shift) {
+                                appState.redo()
+                            } else {
+                                appState.undo()
+                            }
+                            return nil
+                        }
+                    case 16: // Y key with Cmd (Cmd+Y = Redo)
+                        if event.modifierFlags.contains(.command) {
+                            appState.redo()
+                            return nil
+                        }
                     case 37: // L -> Shuttle Forward (1x, 2x, 4x, 8x)
                         appState.shuttleForward()
                         return nil
@@ -107,11 +126,9 @@ public struct EditorStudioView: View {
                     case 38: // J -> Shuttle Reverse (-1x, -2x, -4x, -8x)
                         appState.shuttleReverse()
                         return nil
-                    case 51, 117: // Delete / Backspace -> Delete Selected Block
-                        if let selID = appState.selectedKeyframeID {
-                            appState.deleteZoomKeyframe(id: selID)
-                            return nil
-                        }
+                    case 51, 117: // Delete / Backspace -> Delete Selected Block or Segment
+                        appState.deleteSelected()
+                        return nil
                     default:
                         break
                     }
@@ -716,35 +733,34 @@ public struct EditorStudioView: View {
                 // Artboard Frame dynamically sized to aspect ratio
                 let artboardSize = calculateArtboardDimensions(in: stageGeo.size)
                 
+                let activeVid = appState.activeVideoSegment(at: appState.currentTime)
+                
                 ZStack {
-                    // Dynamic Cinematic Background that zooms & pans along with the video zoom
-                    let zoomScale = appState.currentZoomScale
-                    let fx = appState.currentFocusPoint.x
-                    let fy = appState.currentFocusPoint.y
-                    
-                    // Background camera zoom: scales up in tandem with the video zoom and tracks focus point
-                    let bgScale = max(1.0, zoomScale)
-                    let bgOffsetX = (0.5 - fx) * artboardSize.width * (bgScale - 1.0) * 0.40
-                    let bgOffsetY = (0.5 - fy) * artboardSize.height * (bgScale - 1.0) * 0.40
-                    
-                    Group {
-                        if let colorIdx = appState.activeColorIndex {
-                            paletteColors[colorIdx]
-                        } else {
-                            wallpaperGradients[appState.activeBackgroundIndex]
-                        }
-                    }
-                    .scaleEffect(bgScale)
-                    .offset(x: bgOffsetX, y: bgOffsetY)
-                    
-                    // Video Player View with 3D Cinematic Perspective & After Effects Radial Motion Blur
-                    if let player = appState.avPlayer {
-                        let is3D = appState.currentIs3D
-                        let pitchAngle = appState.currentPitch
-                        let yawAngle = appState.currentYaw
-                        let rollAngle = appState.currentRoll
+                    if activeVid == nil && appState.avPlayer != nil {
+                        // Empty cut / deleted video: Entire artboard frame is completely solid black
+                        Color.black
+                    } else if let player = appState.avPlayer, activeVid != nil {
+                        // Dynamic Cinematic Background that zooms & pans along with the video zoom
+                        let zoomScale = appState.currentZoomScale
+                        let fx = appState.currentFocusPoint.x
+                        let fy = appState.currentFocusPoint.y
                         
-                        // FocuSee style padding: scales the space between video card and wallpaper background without cropping or adding black bars
+                        // Background camera zoom: scales up in tandem with the video zoom and tracks focus point
+                        let bgScale = max(1.0, zoomScale)
+                        let bgOffsetX = (0.5 - fx) * artboardSize.width * (bgScale - 1.0) * 0.40
+                        let bgOffsetY = (0.5 - fy) * artboardSize.height * (bgScale - 1.0) * 0.40
+                        
+                        Group {
+                            if let colorIdx = appState.activeColorIndex {
+                                paletteColors[colorIdx]
+                            } else {
+                                wallpaperGradients[appState.activeBackgroundIndex]
+                            }
+                        }
+                        .scaleEffect(bgScale)
+                        .offset(x: bgOffsetX, y: bgOffsetY)
+                        
+                        // Video Player View with 3D Cinematic Perspective & After Effects Radial Motion Blur
                         let pad = CGFloat(appState.padding)
                         let availW = max(180, artboardSize.width - (pad * 2.0))
                         let availH = max(120, artboardSize.height - (pad * 2.0))
@@ -755,7 +771,11 @@ public struct EditorStudioView: View {
                         let cardW: CGFloat = fitByWidth ? availW : (availH * vRatio)
                         let cardH: CGFloat = fitByWidth ? (availW / vRatio) : availH
                         
+                        let is3D = appState.currentIs3D
                         let shadowRadius = CGFloat(appState.shadow) + (is3D ? 16.0 : 0.0)
+                        let pitchAngle = appState.currentPitch
+                        let yawAngle = appState.currentYaw
+                        let rollAngle = appState.currentRoll
                         
                         NativeVideoPlayerView(
                             player: player,
@@ -773,10 +793,10 @@ public struct EditorStudioView: View {
                         .frame(width: cardW, height: cardH)
                     } else {
                         // Demo fallback placeholder
+                        Color(red: 0.08, green: 0.09, blue: 0.12)
                         VStack(spacing: 8) {
                             Image(systemName: "video.slash")
                                 .font(.system(size: 32))
-                                .foregroundStyle(.secondary)
                             Text("No Video Loaded")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(.white)
@@ -860,57 +880,168 @@ public struct EditorStudioView: View {
     @ViewBuilder
     private var timelineView: some View {
         VStack(spacing: 0) {
-            // Transport & Toolbar
-            HStack(spacing: 12) {
-                // Edit Actions
-                HStack(spacing: 8) {
-                    // 1. Cut / Split tool (clean icon without background)
+            // 1. Professional Transport & Editing Toolbar
+            HStack(spacing: 14) {
+                // Edit Tools (Clean Icons Only - Zero Background Box Clutter)
+                HStack(spacing: 12) {
+                    // Undo (⌘Z)
+                    Button(action: {
+                        appState.undo()
+                    }) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(appState.canUndo ? Color.white.opacity(0.9) : Color.white.opacity(0.25))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!appState.canUndo)
+                    .help("Undo (⌘Z)")
+                    
+                    // Redo (⇧⌘Z or ⌘Y)
+                    Button(action: {
+                        appState.redo()
+                    }) {
+                        Image(systemName: "arrow.uturn.forward")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(appState.canRedo ? Color.white.opacity(0.9) : Color.white.opacity(0.25))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!appState.canRedo)
+                    .help("Redo (⇧⌘Z)")
+                    
+                    // Split / Razor Cut
                     Button(action: {
                         appState.splitAtCurrentTime()
                     }) {
                         Image(systemName: "scissors")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.85))
+                            .foregroundStyle(Color.white.opacity(0.9))
                             .frame(width: 24, height: 24)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Split keyframe at playhead position")
+                    .help("Split clip at playhead (⌘B)")
                     
-                    // 2. Delete Selected Keyframe (clean icon without background)
-                    if let selID = appState.selectedKeyframeID {
-                        Button(action: {
-                            appState.deleteZoomKeyframe(id: selID)
-                        }) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.red.opacity(0.85))
-                                .frame(width: 24, height: 24)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Delete selected keyframe")
+                    // Delete Selected Item
+                    let hasSelection = appState.selectedSegmentID != nil || appState.selectedKeyframeID != nil
+                    Button(action: {
+                        appState.deleteSelected()
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13))
+                            .foregroundStyle(hasSelection ? Color.red.opacity(0.9) : Color.white.opacity(0.3))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .disabled(!hasSelection)
+                    .help("Delete selected block or clip (⌫)")
+                    
+                    // Add Zoom Keyframe
+                    Button(action: {
+                        appState.addZoomKeyframe(at: appState.currentTime)
+                        activeSidebarTab = "camera"
+                    }) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.cyan)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add zoom block at playhead")
+                    
+                    // Snapping Magnet
+                    Button(action: {
+                        appState.isSnappingEnabled.toggle()
+                    }) {
+                        Image(systemName: "magnet.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(appState.isSnappingEnabled ? Color.yellow : Color.secondary)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Toggle Magnet Snapping")
                 }
                 
                 Spacer()
                 
-                // Playback Transport Controls (sleek, compact, no blue background)
-                HStack(spacing: 10) {
+                // Playback Transport Controls (Jump to Start, Step Back, Play/Pause, Step Forward, Jump to End)
+                HStack(spacing: 12) {
+                    // Jump to Start (|◀)
+                    Button(action: {
+                        appState.jumpToStart()
+                    }) {
+                        Image(systemName: "backward.end.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Go to Beginning (Home)")
+                    
+                    // Step Back 1s (◀)
+                    Button(action: {
+                        appState.stepBackward(seconds: 1.0)
+                    }) {
+                        Image(systemName: "backward.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Step Back 1s (←)")
+                    
+                    // Play / Pause (▶ / ⏸)
                     Button(action: {
                         appState.togglePlayback()
                     }) {
                         Image(systemName: appState.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.white)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 26, height: 26)
+                            .background(Color.white.opacity(0.10))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Play / Pause (Space)")
+                    
+                    // Step Forward 1s (▶)
+                    Button(action: {
+                        appState.stepForward(seconds: 1.0)
+                    }) {
+                        Image(systemName: "forward.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                            .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help("Step Forward 1s (→)")
+                    
+                    // Jump to End (▶|)
+                    Button(action: {
+                        appState.jumpToEnd()
+                    }) {
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Go to End (End)")
                     
                     Text("\(formatTimeWithMillis(appState.currentTime)) / \(formatTimeWithMillis(appState.totalDuration))")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .padding(.leading, 4)
                 }
                 
                 Spacer()
@@ -935,182 +1066,319 @@ public struct EditorStudioView: View {
                     .menuStyle(.borderlessButton)
                     .frame(width: 48)
                     
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    Button {
+                        appState.toggleAudioMute()
+                    } label: {
+                        Image(systemName: appState.isAudioMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(appState.isAudioMuted ? Color.red : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Toggle Master Mute")
+                    
                     Slider(value: $appState.audioVolume, in: 0...1) { _ in
                         appState.setVolume(appState.audioVolume)
                     }
-                    .frame(width: 60)
+                    .frame(width: 55)
                     .tint(.blue)
                 }
             }
             .padding(.horizontal, 16)
-            .frame(height: 40)
+            .frame(height: 38)
             .background(Color(red: 0.10, green: 0.11, blue: 0.15))
             
             Divider().overlay(Color.white.opacity(0.06))
             
-            // Tracks Canvas
-            GeometryReader { geo in
-                let trackWidth = max(100, geo.size.width - 28)
-                let totalDur = max(0.1, appState.totalDuration)
-                
-                ZStack(alignment: .topLeading) {
-                    Color(red: 0.07, green: 0.08, blue: 0.11)
-                    
-                    VStack(alignment: .leading, spacing: 6) {
-                        // 1. Dynamic Ruler
-                        dynamicRuler(trackWidth: trackWidth)
-                        
-                        // 2. Track 1: Video Track (FocuSee purple clip)
-                        HStack {
-                            HStack(spacing: 6) {
-                                Image(systemName: "play.rectangle.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                Text("▶ \(appState.recordedVideoURL?.lastPathComponent ?? "Recorded Clip")")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(formatSeconds(appState.totalDuration))
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.7))
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .frame(height: 34)
-                            .background(
-                                LinearGradient(
-                                    colors: [
-                                        Color(red: 0.48, green: 0.16, blue: 0.82),
-                                        Color(red: 0.36, green: 0.10, blue: 0.68)
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.purple.opacity(0.4), lineWidth: 1))
-                        }
-                        .padding(.horizontal, 14)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if let sec = hoverTimelineSec {
-                                appState.seek(to: sec, accurate: true)
-                            }
-                        }
-                        
-                        // 3. Track 2: Zoom Keyframes Track (FocuSee cyan 3D Motion)
-                        ZStack(alignment: .leading) {
-                            // Background track surface (tap on empty space to add zoom block immediately)
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(isZoomTrackHovered ? Color.cyan.opacity(0.08) : Color.white.opacity(0.03))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 5)
-                                        .stroke(isZoomTrackHovered ? Color.cyan.opacity(0.35) : Color.white.opacity(0.06), lineWidth: 1)
-                                )
-                                .frame(height: 30)
-                                .padding(.horizontal, 14)
-                                .contentShape(Rectangle())
-                                .onHover { hovering in
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        isZoomTrackHovered = hovering
-                                    }
-                                }
-                                .onTapGesture {
-                                    let clickSec = hoverTimelineSec ?? appState.currentTime
-                                    let isInside = appState.zoomKeyframes.contains { kf in
-                                        clickSec >= kf.startTime && clickSec < (kf.startTime + kf.duration)
-                                    }
-                                    if !isInside {
-                                        appState.addZoomKeyframe(at: clickSec)
-                                        appState.seek(to: clickSec, accurate: true)
-                                        activeSidebarTab = "camera"
-                                    }
-                                }
-                                .gesture(
-                                    DragGesture(minimumDistance: 6)
-                                        .onChanged { value in
-                                            appState.isScrubbing = true
-                                            let ratio = max(0.0, min(1.0, (value.location.x - 14) / trackWidth))
-                                            appState.seek(to: Double(ratio) * appState.totalDuration)
-                                        }
-                                        .onEnded { _ in
-                                            appState.isScrubbing = false
-                                        }
-                                )
-                            
-                            // Interactive Keyframe Blocks with direct Drag & Resize Trim handles
-                            ForEach(appState.zoomKeyframes) { kf in
-                                KeyframeTimelineItemView(
-                                    appState: appState,
-                                    kf: kf,
-                                    trackWidth: trackWidth,
-                                    totalDur: totalDur,
-                                    activeSidebarTab: $activeSidebarTab
-                                )
-                                .zIndex(30)
-                            }
-                        }
-                        .coordinateSpace(name: "TimelineTrackContainer")
-                        .frame(height: 30)
-                        
-                        Spacer(minLength: 0)
+            // 2. Timeline Workspace: Left Track Headers + Right Track Canvas
+            HStack(spacing: 0) {
+                // Left Track Header Controls Column (Width ~105px)
+                VStack(alignment: .leading, spacing: 6) {
+                    // Header Ruler Spacer
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Text("TRACKS")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.top, 4)
+                    .frame(height: 16)
+                    .padding(.horizontal, 8)
                     
-                    // Hover Gray Skimmer Line (Clean Minimalist Pin spanning full track height)
-                    if let hoverSec = hoverTimelineSec, !appState.isScrubbing {
-                        let hoverRatio = max(0.0, min(1.0, hoverSec / totalDur))
-                        let hoverX = CGFloat(hoverRatio) * trackWidth + 14
+                    // Track 1 Header (Video Track V1)
+                    HStack(spacing: 5) {
+                        Text("V1")
+                            .font(.system(size: 8.5, weight: .black))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.85))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                        
+                        Text("Video")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        
+                        Spacer()
+                        
+                        Button {
+                            appState.isVideoTrackHidden.toggle()
+                        } label: {
+                            Image(systemName: appState.isVideoTrackHidden ? "eye.slash.fill" : "eye.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(appState.isVideoTrackHidden ? Color.secondary : Color.white.opacity(0.75))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Toggle Video Track Visibility")
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 32)
+                    .background(Color.white.opacity(0.03))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    
+                    // Track 2 Header (3D Zoom Track Z1)
+                    HStack(spacing: 5) {
+                        Text("Z1")
+                            .font(.system(size: 8.5, weight: .black))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color.cyan.opacity(0.85))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                        
+                        Text("Zoom")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        
+                        Spacer()
+                        
+                        Button {
+                            appState.addZoomKeyframe(at: appState.currentTime)
+                            activeSidebarTab = "camera"
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.cyan)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Add Zoom Block at Playhead")
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 30)
+                    .background(Color.white.opacity(0.03))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    
+                    // Track 3 Header (Audio Track A1 with Mute Button)
+                    HStack(spacing: 5) {
+                        Text("A1")
+                            .font(.system(size: 8.5, weight: .black))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color(red: 0.15, green: 0.70, blue: 0.50))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                        
+                        Text("Audio")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        
+                        Spacer()
+                        
+                        Button {
+                            appState.toggleAudioMute()
+                        } label: {
+                            Image(systemName: appState.isAudioMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(appState.isAudioMuted ? Color.red : Color(red: 0.20, green: 0.85, blue: 0.65))
+                        }
+                        .buttonStyle(.plain)
+                        .help(appState.isAudioMuted ? "Unmute Audio Track" : "Mute Audio Track")
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(Color.white.opacity(0.03))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    
+                    Spacer(minLength: 0)
+                }
+                .frame(width: 105)
+                .padding(.leading, 8)
+                .padding(.top, 4)
+                .background(Color(red: 0.08, green: 0.09, blue: 0.12))
+                
+                Divider().overlay(Color.white.opacity(0.06))
+                
+                // Right Tracks Canvas
+                GeometryReader { geo in
+                    let trackWidth = max(100, geo.size.width - 24)
+                    let totalDur = max(0.1, appState.totalDuration)
+                    
+                    ZStack(alignment: .topLeading) {
+                        Color(red: 0.07, green: 0.08, blue: 0.11)
+                        
+                        VStack(alignment: .leading, spacing: 6) {
+                            // 1. Dynamic Ruler
+                            dynamicRuler(trackWidth: trackWidth)
+                            
+                            // 2. Track 1: Video Track (Segmented Media Clips)
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.white.opacity(0.015))
+                                    .frame(height: 32)
+                                    .padding(.horizontal, 10)
+                                
+                                ForEach(appState.videoSegments) { seg in
+                                    VideoClipTimelineItemView(
+                                        appState: appState,
+                                        seg: seg,
+                                        trackWidth: trackWidth,
+                                        totalDur: totalDur
+                                    )
+                                    .padding(.horizontal, 10)
+                                }
+                            }
+                            .coordinateSpace(name: "TimelineTrackContainer")
+                            .frame(height: 32)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if let sec = hoverTimelineSec {
+                                    appState.seek(to: sec, accurate: true)
+                                }
+                            }
+                            
+                            // 3. Track 2: Zoom Keyframes Track (Motion Blocks)
+                            ZStack(alignment: .leading) {
+                                // Clean Background track surface (tap on empty space to add zoom block immediately)
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(isZoomTrackHovered ? Color.cyan.opacity(0.04) : Color.white.opacity(0.015))
+                                    .frame(height: 30)
+                                    .padding(.horizontal, 10)
+                                    .contentShape(Rectangle())
+                                    .onHover { hovering in
+                                        withAnimation(.easeInOut(duration: 0.15)) {
+                                            isZoomTrackHovered = hovering
+                                        }
+                                    }
+                                    .onTapGesture {
+                                        let clickSec = hoverTimelineSec ?? appState.currentTime
+                                        let isInside = appState.zoomKeyframes.contains { kf in
+                                            clickSec >= kf.startTime && clickSec < (kf.startTime + kf.duration)
+                                        }
+                                        if !isInside {
+                                            appState.addZoomKeyframe(at: clickSec)
+                                            appState.seek(to: clickSec, accurate: true)
+                                            activeSidebarTab = "camera"
+                                        }
+                                    }
+                                    .gesture(
+                                        DragGesture(minimumDistance: 6)
+                                            .onChanged { value in
+                                                appState.isScrubbing = true
+                                                let ratio = max(0.0, min(1.0, (value.location.x - 10) / trackWidth))
+                                                appState.seek(to: Double(ratio) * appState.totalDuration)
+                                            }
+                                            .onEnded { _ in
+                                                appState.isScrubbing = false
+                                            }
+                                    )
+                                
+                                // Interactive Keyframe Blocks with direct Drag & Resize Trim handles
+                                ForEach(appState.zoomKeyframes) { kf in
+                                    KeyframeTimelineItemView(
+                                        appState: appState,
+                                        kf: kf,
+                                        trackWidth: trackWidth,
+                                        totalDur: totalDur,
+                                        activeSidebarTab: $activeSidebarTab
+                                    )
+                                    .padding(.horizontal, 10)
+                                    .zIndex(30)
+                                }
+                            }
+                            .coordinateSpace(name: "TimelineTrackContainer")
+                            .frame(height: 30)
+                            
+                            // 4. Track 3: Audio Waveform Track (Segmented Audio Clips)
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.white.opacity(0.015))
+                                    .frame(height: 28)
+                                    .padding(.horizontal, 10)
+                                
+                                ForEach(appState.audioSegments) { seg in
+                                    AudioClipTimelineItemView(
+                                        appState: appState,
+                                        seg: seg,
+                                        trackWidth: trackWidth,
+                                        totalDur: totalDur
+                                    )
+                                    .padding(.horizontal, 10)
+                                }
+                            }
+                            .coordinateSpace(name: "TimelineTrackContainer")
+                            .frame(height: 28)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if let sec = hoverTimelineSec {
+                                    appState.seek(to: sec, accurate: true)
+                                }
+                            }
+                            
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.top, 4)
+                        
+                        // Hover Gray Skimmer Line (Clean Minimalist Pin spanning full track height)
+                        if let hoverSec = hoverTimelineSec, !appState.isScrubbing {
+                            let hoverRatio = max(0.0, min(1.0, hoverSec / totalDur))
+                            let hoverX = CGFloat(hoverRatio) * trackWidth + 10
+                            
+                            Rectangle()
+                                .fill(Color(white: 0.70).opacity(0.75))
+                                .frame(width: 1.5)
+                                .frame(maxHeight: .infinity)
+                                .overlay(
+                                    TrianglePin()
+                                        .fill(Color(white: 0.75))
+                                        .frame(width: 12, height: 9)
+                                        .offset(y: -4),
+                                    alignment: .top
+                                )
+                                .offset(x: hoverX)
+                                .allowsHitTesting(false)
+                        }
+                        
+                        // Main Playhead (Orange/Yellow Master Current Time Anchor spanning full track height)
+                        let playheadRatio = max(0.0, min(1.0, appState.currentTime / totalDur))
+                        let playheadX = CGFloat(playheadRatio) * trackWidth + 10
                         
                         Rectangle()
-                            .fill(Color(white: 0.70).opacity(0.75))
-                            .frame(width: 1.5)
+                            .fill(Color.orange)
+                            .frame(width: 2)
                             .frame(maxHeight: .infinity)
                             .overlay(
                                 TrianglePin()
-                                    .fill(Color(white: 0.75))
+                                    .fill(Color.orange)
                                     .frame(width: 12, height: 9)
                                     .offset(y: -4),
                                 alignment: .top
                             )
-                            .offset(x: hoverX)
+                            .offset(x: playheadX)
                             .allowsHitTesting(false)
                     }
-                    
-                    // Main Playhead (Orange/Yellow Master Current Time Anchor spanning full track height)
-                    let playheadRatio = max(0.0, min(1.0, appState.currentTime / totalDur))
-                    let playheadX = CGFloat(playheadRatio) * trackWidth + 14
-                    
-                    Rectangle()
-                        .fill(Color.orange)
-                        .frame(width: 2)
-                        .frame(maxHeight: .infinity)
-                        .overlay(
-                            TrianglePin()
-                                .fill(Color.orange)
-                                .frame(width: 12, height: 9)
-                                .offset(y: -4),
-                            alignment: .top
-                        )
-                        .offset(x: playheadX)
-                        .allowsHitTesting(false)
-                }
-                .onContinuousHover(coordinateSpace: .local) { phase in
-                    switch phase {
-                    case .active(let pt):
-                        let ratio = max(0.0, min(1.0, (pt.x - 14) / trackWidth))
-                        let sec = Double(ratio) * totalDur
-                        hoverTimelineSec = sec
-                        isHoveringTimeline = true
-                        appState.previewHover(at: sec)
-                    case .ended:
-                        hoverTimelineSec = nil
-                        isHoveringTimeline = false
-                        appState.endHoverPreview()
+                    .onContinuousHover(coordinateSpace: .local) { phase in
+                        switch phase {
+                        case .active(let pt):
+                            let ratio = max(0.0, min(1.0, (pt.x - 10) / trackWidth))
+                            let sec = Double(ratio) * totalDur
+                            hoverTimelineSec = sec
+                            isHoveringTimeline = true
+                            appState.previewHover(at: sec)
+                        case .ended:
+                            hoverTimelineSec = nil
+                            isHoveringTimeline = false
+                            appState.endHoverPreview()
+                        }
                     }
                 }
             }
@@ -1137,13 +1405,13 @@ public struct EditorStudioView: View {
                 }
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 10)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     appState.isScrubbing = true
-                    let ratio = max(0.0, min(1.0, (value.location.x - 14) / trackWidth))
+                    let ratio = max(0.0, min(1.0, (value.location.x - 10) / trackWidth))
                     appState.seek(to: Double(ratio) * appState.totalDuration)
                 }
                 .onEnded { _ in
@@ -1264,6 +1532,388 @@ final class CustomCursorNSView: NSView {
     }
 }
 
+/// Interactive Segmented Video Clip View with drag-drop and left/right trim handles
+struct VideoClipTimelineItemView: View {
+    @Bindable var appState: AppState
+    let seg: MediaClipSegment
+    let trackWidth: CGFloat
+    let totalDur: Double
+    
+    @State private var dragStart_StartSec: Double? = nil
+    @State private var dragStart_DurSec: Double? = nil
+    @State private var isHoveringLeftHandle = false
+    @State private var isHoveringRightHandle = false
+    @State private var isHoveringBody = false
+    
+    var body: some View {
+        let currentSeg = appState.videoSegments.first(where: { $0.id == seg.id }) ?? seg
+        let startRatio = max(0.0, min(1.0, currentSeg.timelineStartTime / totalDur))
+        let durationRatio = max(0.005, min(1.0, currentSeg.duration / totalDur))
+        let xPos = CGFloat(startRatio) * trackWidth
+        let blockW = max(20, CGFloat(durationRatio) * trackWidth)
+        let isSelected = appState.selectedSegmentID == currentSeg.id && appState.selectedTrackType == .video
+        
+        ZStack(alignment: .leading) {
+            // Clip background
+            RoundedRectangle(cornerRadius: 6)
+                .fill(
+                    LinearGradient(
+                        colors: isSelected
+                            ? [Color(red: 0.58, green: 0.22, blue: 0.95), Color(red: 0.44, green: 0.14, blue: 0.82)]
+                            : [Color(red: 0.42, green: 0.14, blue: 0.74), Color(red: 0.30, green: 0.08, blue: 0.58)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? Color.white : Color.purple.opacity(0.4), lineWidth: isSelected ? 1.5 : 0.8)
+                )
+            
+            // 3-Zone Interactive Layout
+            HStack(spacing: 0) {
+                // Left Trim Handle
+                if blockW >= 24 {
+                    Rectangle()
+                        .fill(Color.white.opacity(isHoveringLeftHandle ? 0.25 : 0.001))
+                        .frame(width: 8, height: 32)
+                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                        .contentShape(Rectangle())
+                        .onHover { hovering in
+                            isHoveringLeftHandle = hovering
+                            if hovering { NSCursor.resizeLeftRight.set() }
+                        }
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
+                                .onChanged { value in
+                                    appState.isScrubbing = true
+                                    appState.selectSegment(id: currentSeg.id, trackType: .video)
+                                    if dragStart_StartSec == nil {
+                                        appState.recordUndoState()
+                                        dragStart_StartSec = currentSeg.timelineStartTime
+                                        dragStart_DurSec = currentSeg.duration
+                                    }
+                                    if let initStart = dragStart_StartSec {
+                                        let deltaX = value.location.x - value.startLocation.x
+                                        let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                        let newStart = initStart + deltaSec
+                                        appState.trimSegmentStart(id: currentSeg.id, trackType: .video, newTimelineStart: newStart)
+                                        appState.seek(to: currentSeg.timelineStartTime, accurate: false)
+                                    }
+                                }
+                                .onEnded { _ in
+                                    appState.isScrubbing = false
+                                    dragStart_StartSec = nil
+                                    dragStart_DurSec = nil
+                                }
+                        )
+                }
+                
+                // Center Move Body
+                HStack(spacing: 5) {
+                    Image(systemName: "film.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.white.opacity(0.85))
+                    
+                    if blockW >= 60 {
+                        Text(currentSeg.name)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    
+                    Spacer()
+                    
+                    if blockW >= 40 {
+                        Text(formatSecShort(currentSeg.duration))
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(CustomCursorView(cursor: .openHand))
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    isHoveringBody = hovering
+                    if hovering { NSCursor.openHand.set() }
+                }
+                .onTapGesture {
+                    appState.selectSegment(id: currentSeg.id, trackType: .video)
+                }
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
+                        .onChanged { value in
+                            appState.isScrubbing = true
+                            appState.selectSegment(id: currentSeg.id, trackType: .video)
+                            if dragStart_StartSec == nil {
+                                appState.recordUndoState()
+                                dragStart_StartSec = currentSeg.timelineStartTime
+                            }
+                            if let initStart = dragStart_StartSec {
+                                let deltaX = value.location.x - value.startLocation.x
+                                let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                let newStart = initStart + deltaSec
+                                appState.moveSegment(id: currentSeg.id, trackType: .video, newTimelineStart: newStart)
+                                appState.seek(to: currentSeg.timelineStartTime, accurate: false)
+                            }
+                        }
+                        .onEnded { _ in
+                            appState.isScrubbing = false
+                            dragStart_StartSec = nil
+                        }
+                )
+                
+                // Right Trim Handle
+                if blockW >= 24 {
+                    Rectangle()
+                        .fill(Color.white.opacity(isHoveringRightHandle ? 0.25 : 0.001))
+                        .frame(width: 8, height: 32)
+                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                        .contentShape(Rectangle())
+                        .onHover { hovering in
+                            isHoveringRightHandle = hovering
+                            if hovering { NSCursor.resizeLeftRight.set() }
+                        }
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
+                                .onChanged { value in
+                                    appState.isScrubbing = true
+                                    appState.selectSegment(id: currentSeg.id, trackType: .video)
+                                    if dragStart_DurSec == nil {
+                                        appState.recordUndoState()
+                                        dragStart_DurSec = currentSeg.duration
+                                    }
+                                    if let initDur = dragStart_DurSec {
+                                        let deltaX = value.location.x - value.startLocation.x
+                                        let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                        let newDur = initDur + deltaSec
+                                        appState.trimSegmentEnd(id: currentSeg.id, trackType: .video, newDuration: newDur)
+                                        appState.seek(to: currentSeg.timelineEndTime, accurate: false)
+                                    }
+                                }
+                                .onEnded { _ in
+                                    appState.isScrubbing = false
+                                    dragStart_DurSec = nil
+                                }
+                        )
+                }
+            }
+        }
+        .frame(width: blockW, height: 32)
+        .shadow(color: isSelected ? Color.purple.opacity(0.5) : Color.clear, radius: 4, y: 1)
+        .offset(x: xPos)
+    }
+}
+
+/// Interactive Segmented Audio Clip View with embedded waveform visualization, drag-drop and trimming
+struct AudioClipTimelineItemView: View {
+    @Bindable var appState: AppState
+    let seg: MediaClipSegment
+    let trackWidth: CGFloat
+    let totalDur: Double
+    
+    @State private var dragStart_StartSec: Double? = nil
+    @State private var dragStart_DurSec: Double? = nil
+    @State private var isHoveringLeftHandle = false
+    @State private var isHoveringRightHandle = false
+    @State private var isHoveringBody = false
+    
+    var body: some View {
+        let currentSeg = appState.audioSegments.first(where: { $0.id == seg.id }) ?? seg
+        let startRatio = max(0.0, min(1.0, currentSeg.timelineStartTime / totalDur))
+        let durationRatio = max(0.005, min(1.0, currentSeg.duration / totalDur))
+        let xPos = CGFloat(startRatio) * trackWidth
+        let blockW = max(20, CGFloat(durationRatio) * trackWidth)
+        let isSelected = appState.selectedSegmentID == currentSeg.id && appState.selectedTrackType == .audio
+        let isMuted = currentSeg.isMuted || appState.isAudioMuted
+        
+        ZStack(alignment: .leading) {
+            // Clip background
+            RoundedRectangle(cornerRadius: 6)
+                .fill(
+                    LinearGradient(
+                        colors: isSelected
+                            ? [Color(red: 0.08, green: 0.32, blue: 0.24), Color(red: 0.05, green: 0.22, blue: 0.18)]
+                            : [Color(red: 0.04, green: 0.20, blue: 0.16), Color(red: 0.03, green: 0.14, blue: 0.12)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? Color.white : Color(red: 0.20, green: 0.85, blue: 0.65).opacity(0.35), lineWidth: isSelected ? 1.5 : 0.8)
+                )
+            
+            // Waveform Visualizer Bars mapped to clip's time range
+            GeometryReader { geo in
+                let w = geo.size.width
+                let h = geo.size.height
+                let samples = appState.audioWaveformSamples
+                
+                HStack(spacing: 2) {
+                    if samples.isEmpty {
+                        ForEach(0..<Int(max(5, w / 5)), id: \.self) { idx in
+                            let phase = Double(idx) * 0.25
+                            let s1 = sin(phase)
+                            let s2 = sin(phase * 0.7)
+                            let ampVal = 0.20 + 0.35 * s1 * s2
+                            let amp = CGFloat(ampVal)
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Color(red: 0.20, green: 0.85, blue: 0.65).opacity(isMuted ? 0.20 : 0.60))
+                                .frame(width: 2, height: max(3, h * amp))
+                        }
+                    } else {
+                        // Subsample corresponding to source range
+                        let totalSamples = samples.count
+                        let startFraction = currentSeg.sourceStartTime / max(0.1, appState.totalDuration)
+                        let endFraction = (currentSeg.sourceStartTime + currentSeg.duration) / max(0.1, appState.totalDuration)
+                        let startIdx = Int(max(0, min(Double(totalSamples - 1), startFraction * Double(totalSamples))))
+                        let endIdx = Int(max(Double(startIdx + 1), min(Double(totalSamples), endFraction * Double(totalSamples))))
+                        let slice = Array(samples[startIdx..<endIdx])
+                        
+                        ForEach(0..<slice.count, id: \.self) { idx in
+                            let amp = CGFloat(slice[idx])
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Color(red: 0.20, green: 0.85, blue: 0.65).opacity(isMuted ? 0.20 : 0.80))
+                                .frame(width: max(1.5, (w / CGFloat(max(1, slice.count))) - 2), height: max(3, h * amp))
+                        }
+                    }
+                }
+                .frame(width: w, height: h, alignment: .center)
+            }
+            .padding(.horizontal, 8)
+            .allowsHitTesting(false)
+            
+            // 3-Zone Interactive Layout
+            HStack(spacing: 0) {
+                // Left Trim Handle
+                if blockW >= 24 {
+                    Rectangle()
+                        .fill(Color.white.opacity(isHoveringLeftHandle ? 0.25 : 0.001))
+                        .frame(width: 8, height: 28)
+                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                        .contentShape(Rectangle())
+                        .onHover { hovering in
+                            isHoveringLeftHandle = hovering
+                            if hovering { NSCursor.resizeLeftRight.set() }
+                        }
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
+                                .onChanged { value in
+                                    appState.isScrubbing = true
+                                    appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                                    if dragStart_StartSec == nil {
+                                        appState.recordUndoState()
+                                        dragStart_StartSec = currentSeg.timelineStartTime
+                                        dragStart_DurSec = currentSeg.duration
+                                    }
+                                    if let initStart = dragStart_StartSec {
+                                        let deltaX = value.location.x - value.startLocation.x
+                                        let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                        let newStart = initStart + deltaSec
+                                        appState.trimSegmentStart(id: currentSeg.id, trackType: .audio, newTimelineStart: newStart)
+                                        appState.seek(to: currentSeg.timelineStartTime, accurate: false)
+                                    }
+                                }
+                                .onEnded { _ in
+                                    appState.isScrubbing = false
+                                    dragStart_StartSec = nil
+                                    dragStart_DurSec = nil
+                                }
+                        )
+                }
+                
+                // Center Move Body
+                HStack(spacing: 4) {
+                    if isMuted {
+                        Image(systemName: "speaker.slash.fill")
+                            .font(.system(size: 8.5))
+                            .foregroundStyle(.red)
+                    }
+                    Spacer()
+                    if blockW >= 35 {
+                        Text(formatSecShort(currentSeg.duration))
+                            .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(CustomCursorView(cursor: .openHand))
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    isHoveringBody = hovering
+                    if hovering { NSCursor.openHand.set() }
+                }
+                .onTapGesture {
+                    appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                }
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
+                        .onChanged { value in
+                            appState.isScrubbing = true
+                            appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                            if dragStart_StartSec == nil {
+                                appState.recordUndoState()
+                                dragStart_StartSec = currentSeg.timelineStartTime
+                            }
+                            if let initStart = dragStart_StartSec {
+                                let deltaX = value.location.x - value.startLocation.x
+                                let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                let newStart = initStart + deltaSec
+                                appState.moveSegment(id: currentSeg.id, trackType: .audio, newTimelineStart: newStart)
+                                appState.seek(to: currentSeg.timelineStartTime, accurate: false)
+                            }
+                        }
+                        .onEnded { _ in
+                            appState.isScrubbing = false
+                            dragStart_StartSec = nil
+                        }
+                )
+                
+                // Right Trim Handle
+                if blockW >= 24 {
+                    Rectangle()
+                        .fill(Color.white.opacity(isHoveringRightHandle ? 0.25 : 0.001))
+                        .frame(width: 8, height: 28)
+                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                        .contentShape(Rectangle())
+                        .onHover { hovering in
+                            isHoveringRightHandle = hovering
+                            if hovering { NSCursor.resizeLeftRight.set() }
+                        }
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
+                                .onChanged { value in
+                                    appState.isScrubbing = true
+                                    appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                                    if dragStart_DurSec == nil {
+                                        appState.recordUndoState()
+                                        dragStart_DurSec = currentSeg.duration
+                                    }
+                                    if let initDur = dragStart_DurSec {
+                                        let deltaX = value.location.x - value.startLocation.x
+                                        let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                        let newDur = initDur + deltaSec
+                                        appState.trimSegmentEnd(id: currentSeg.id, trackType: .audio, newDuration: newDur)
+                                        appState.seek(to: currentSeg.timelineEndTime, accurate: false)
+                                    }
+                                }
+                                .onEnded { _ in
+                                    appState.isScrubbing = false
+                                    dragStart_DurSec = nil
+                                }
+                        )
+                }
+            }
+        }
+        .frame(width: blockW, height: 28)
+        .shadow(color: isSelected ? Color.green.opacity(0.4) : Color.clear, radius: 4, y: 1)
+        .offset(x: xPos)
+    }
+}
+
 /// Interactive Timeline Keyframe Block with ultra-smooth Drag (move) and Trim Handles (resize start & duration)
 struct KeyframeTimelineItemView: View {
     @Bindable var appState: AppState
@@ -1282,7 +1932,7 @@ struct KeyframeTimelineItemView: View {
         let currentKf = appState.zoomKeyframes.first(where: { $0.id == kf.id }) ?? kf
         let startRatio = max(0.0, min(1.0, currentKf.startTime / totalDur))
         let durationRatio = max(0.005, min(1.0, currentKf.duration / totalDur))
-        let xPos = CGFloat(startRatio) * trackWidth + 14
+        let xPos = CGFloat(startRatio) * trackWidth
         let blockW = max(18, CGFloat(durationRatio) * trackWidth)
         let isSelected = appState.selectedKeyframeID == currentKf.id
         
@@ -1309,7 +1959,7 @@ struct KeyframeTimelineItemView: View {
                 if blockW >= 24 {
                     Rectangle()
                         .fill(Color.white.opacity(0.001))
-                        .frame(width: 10, height: 24)
+                        .frame(width: 8, height: 24)
                         .background(CustomCursorView(cursor: .resizeLeftRight))
                         .contentShape(Rectangle())
                         .onHover { hovering in
@@ -1327,6 +1977,7 @@ struct KeyframeTimelineItemView: View {
                                         appState.selectKeyframe(id: currentKf.id)
                                     }
                                     if dragStart_StartSec == nil {
+                                        appState.recordUndoState()
                                         dragStart_StartSec = currentKf.startTime
                                         dragStart_DurSec = currentKf.duration
                                     }
@@ -1383,6 +2034,7 @@ struct KeyframeTimelineItemView: View {
                                 appState.selectKeyframe(id: currentKf.id)
                             }
                             if dragStart_StartSec == nil {
+                                appState.recordUndoState()
                                 dragStart_StartSec = currentKf.startTime
                             }
                             if let initStart = dragStart_StartSec {
@@ -1406,7 +2058,7 @@ struct KeyframeTimelineItemView: View {
                 if blockW >= 24 {
                     Rectangle()
                         .fill(Color.white.opacity(0.001))
-                        .frame(width: 10, height: 24)
+                        .frame(width: 8, height: 24)
                         .background(CustomCursorView(cursor: .resizeLeftRight))
                         .contentShape(Rectangle())
                         .onHover { hovering in
@@ -1424,6 +2076,7 @@ struct KeyframeTimelineItemView: View {
                                         appState.selectKeyframe(id: currentKf.id)
                                     }
                                     if dragStart_DurSec == nil {
+                                        appState.recordUndoState()
                                         dragStart_DurSec = currentKf.duration
                                     }
                                     if let initDur = dragStart_DurSec {
@@ -1449,5 +2102,16 @@ struct KeyframeTimelineItemView: View {
         .frame(width: blockW, height: 24)
         .shadow(color: isSelected ? Color.blue.opacity(0.4) : Color.clear, radius: 4, y: 1)
         .offset(x: xPos)
+    }
+}
+
+func formatSecShort(_ sec: Double) -> String {
+    let m = Int(sec) / 60
+    let s = Int(sec) % 60
+    let tenths = Int((sec.truncatingRemainder(dividingBy: 1)) * 10)
+    if m > 0 {
+        return String(format: "%d:%02d", m, s)
+    } else {
+        return String(format: "%d.%ds", s, tenths)
     }
 }

@@ -164,4 +164,91 @@ final class ClipFocusCoreTests: XCTestCase {
         // 0.3 * -0.3 = -0.09 * -8 = 0.72 degrees roll
         XCTAssertEqual(roll, 0.72, accuracy: 0.001)
     }
+    
+    func testMediaClipSegmentSerialization() throws {
+        let seg = MediaClipSegment(
+            trackType: .video,
+            name: "Clip 1",
+            sourceStartTime: 0.0,
+            timelineStartTime: 2.5,
+            duration: 5.0,
+            isMuted: false,
+            volume: 1.0
+        )
+        
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(seg)
+        
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(MediaClipSegment.self, from: data)
+        
+        XCTAssertEqual(decoded.trackType, .video)
+        XCTAssertEqual(decoded.name, "Clip 1")
+        XCTAssertEqual(decoded.timelineStartTime, 2.5)
+        XCTAssertEqual(decoded.duration, 5.0)
+        XCTAssertEqual(decoded.timelineEndTime, 7.5)
+        XCTAssertFalse(decoded.isMuted)
+    }
+    
+    func testMediaClipSegmentSplitMath() {
+        let original = MediaClipSegment(
+            trackType: .video,
+            name: "Screen Recording",
+            sourceStartTime: 1.0,
+            timelineStartTime: 0.0,
+            duration: 10.0,
+            isMuted: false,
+            volume: 1.0
+        )
+        
+        let splitTime = 4.0
+        let firstDuration = splitTime - original.timelineStartTime // 4.0
+        let secondDuration = original.duration - firstDuration // 6.0
+        
+        var part1 = original
+        part1.duration = firstDuration
+        
+        let part2 = MediaClipSegment(
+            trackType: .video,
+            name: "\(original.name) (Cut)",
+            sourceStartTime: original.sourceStartTime + firstDuration, // 5.0
+            timelineStartTime: splitTime, // 4.0
+            duration: secondDuration, // 6.0
+            isMuted: original.isMuted,
+            volume: original.volume
+        )
+        
+        XCTAssertEqual(part1.timelineStartTime, 0.0)
+        XCTAssertEqual(part1.duration, 4.0)
+        XCTAssertEqual(part1.timelineEndTime, 4.0)
+        
+        XCTAssertEqual(part2.timelineStartTime, 4.0)
+        XCTAssertEqual(part2.duration, 6.0)
+        XCTAssertEqual(part2.timelineEndTime, 10.0)
+        XCTAssertEqual(part2.sourceStartTime, 5.0)
+    }
+    
+    func testMediaClipSegmentTrimClamping() {
+        let totalMediaDuration = 10.0
+        let seg = MediaClipSegment(
+            trackType: .video,
+            name: "Segment Cut",
+            sourceStartTime: 4.0,
+            timelineStartTime: 2.0,
+            duration: 3.0 // ends at source 7.0, timeline 5.0
+        )
+        
+        // 1. Trimming start (left handle) backwards can only go back to sourceStartTime == 0.0
+        // minSourceStart = timelineStartTime (2.0) - sourceStartTime (4.0) = -2.0
+        let minTimelineStart = 0.0 // no prev clip
+        let minSourceStart = seg.timelineStartTime - seg.sourceStartTime // -2.0
+        let effectiveMinStart = max(minTimelineStart, minSourceStart) // 0.0
+        XCTAssertEqual(effectiveMinStart, 0.0)
+        
+        // 2. Trimming end (right handle) forwards can only extend up to totalMediaDuration (10.0)
+        // maxSourceDur = totalMediaDuration (10.0) - seg.sourceStartTime (4.0) = 6.0
+        let maxSourceDur = max(0.2, totalMediaDuration - seg.sourceStartTime)
+        XCTAssertEqual(maxSourceDur, 6.0)
+    }
 }
+

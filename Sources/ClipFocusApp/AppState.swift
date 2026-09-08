@@ -73,6 +73,8 @@ public final class AppState: @unchecked Sendable {
     public var availableCameras: [String] = ["None"]
     
     public var selectedMic: String = "None"
+    public var hasMicPermission: Bool = false
+    public var showMicPermissionAlert: Bool = false
     public var availableMics: [String] = ["None"]
     
     public var selectedAudio: String = "None"
@@ -97,6 +99,13 @@ public final class AppState: @unchecked Sendable {
         return 16.0 / 10.0
     }()
     public var zoomKeyframes: [ZoomKeyframe] = []
+    public var videoSegments: [MediaClipSegment] = []
+    public var audioSegments: [MediaClipSegment] = []
+    public var selectedSegmentID: UUID? = nil
+    public var selectedTrackType: TimelineTrackType? = nil
+    public var isVideoTrackHidden: Bool = false
+    public var isZoomTrackHidden: Bool = false
+    public var isSnappingEnabled: Bool = true
     public var currentZoomScale: CGFloat = 1.0
     public var currentFocusPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     public var currentPitch: Double = 0.0
@@ -402,6 +411,18 @@ public final class AppState: @unchecked Sendable {
         captureManager.checkPermissions()
         let camStatus = AVCaptureDevice.authorizationStatus(for: .video)
         hasCameraPermission = (camStatus == .authorized)
+        
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        hasMicPermission = (micStatus == .authorized)
+        if micStatus == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    self.hasMicPermission = granted
+                    self.refreshHardwareDevices()
+                }
+            }
+        }
+        
         refreshHardwareDevices()
     }
     
@@ -468,6 +489,30 @@ public final class AppState: @unchecked Sendable {
         case .denied, .restricted:
             self.hasCameraPermission = false
             self.showCameraPermissionAlert = true
+        @unknown default:
+            break
+        }
+    }
+    
+    public func requestMicrophonePermission() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch status {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    self.hasMicPermission = granted
+                    self.refreshHardwareDevices()
+                }
+            }
+        case .authorized:
+            self.hasMicPermission = true
+            refreshHardwareDevices()
+        case .denied, .restricted:
+            self.hasMicPermission = false
+            self.showMicPermissionAlert = true
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                NSWorkspace.shared.open(url)
+            }
         @unknown default:
             break
         }
@@ -573,6 +618,7 @@ public final class AppState: @unchecked Sendable {
                     mode: self.selectedMode?.rawValue ?? "Full Screen",
                     captureMicrophoneAudio: self.selectedMic != "None",
                     captureSystemAudio: self.selectedAudio != "None",
+                    targetMicrophoneName: self.selectedMic != "None" ? self.selectedMic : nil,
                     sourceRect: sourceRect,
                     targetWindowID: targetWindowID,
                     excludedWindowIDs: excluded
@@ -649,6 +695,87 @@ public final class AppState: @unchecked Sendable {
         }
     }
     
+    public var isAudioMuted: Bool = false
+    public var audioWaveformSamples: [Float] = []
+    
+    public func loadAudioWaveform(from url: URL) {
+        Task {
+            let asset = AVURLAsset(url: url)
+            guard let audioTracks = try? await asset.loadTracks(withMediaType: .audio),
+                  let track = audioTracks.first else {
+                await MainActor.run {
+                    self.audioWaveformSamples = []
+                }
+                return
+            }
+            
+            do {
+                let reader = try AVAssetReader(asset: asset)
+                let outputSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsFloatKey: false,
+                    AVLinearPCMIsBigEndianKey: false,
+                    AVLinearPCMIsNonInterleaved: false
+                ]
+                let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
+                guard reader.canAdd(trackOutput) else { return }
+                reader.add(trackOutput)
+                reader.startReading()
+                
+                var rawAmplitudes: [Float] = []
+                while reader.status == .reading {
+                    if let sampleBuffer = trackOutput.copyNextSampleBuffer(),
+                       let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
+                        let length = CMBlockBufferGetDataLength(blockBuffer)
+                        var data = Data(count: length)
+                        data.withUnsafeMutableBytes { bytes in
+                            if let base = bytes.baseAddress {
+                                CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: length, destination: base)
+                            }
+                        }
+                        data.withUnsafeBytes { (int16Ptr: UnsafeRawBufferPointer) in
+                            let count = length / 2
+                            let buffer = int16Ptr.bindMemory(to: Int16.self)
+                            var maxAmp: Float = 0
+                            for idx in stride(from: 0, to: count, by: 16) {
+                                let amp = abs(Float(buffer[idx])) / 32768.0
+                                if amp > maxAmp { maxAmp = amp }
+                            }
+                            rawAmplitudes.append(maxAmp)
+                        }
+                    } else {
+                        break
+                    }
+                }
+                
+                let targetSampleCount = 120
+                var condensed: [Float] = []
+                if !rawAmplitudes.isEmpty {
+                    let bucketSize = max(1, rawAmplitudes.count / targetSampleCount)
+                    for i in 0..<targetSampleCount {
+                        let startIdx = i * bucketSize
+                        let endIdx = min(rawAmplitudes.count, startIdx + bucketSize)
+                        if startIdx < rawAmplitudes.count {
+                            let slice = rawAmplitudes[startIdx..<endIdx]
+                            let avg = slice.reduce(0, +) / Float(slice.count)
+                            condensed.append(min(1.0, avg * 3.5 + 0.15))
+                        } else {
+                            condensed.append(0.15)
+                        }
+                    }
+                }
+                
+                let finalCondensed = condensed
+                await MainActor.run {
+                    self.audioWaveformSamples = finalCondensed
+                }
+            } catch {
+                NSLog("Waveform extraction failed: %@", error.localizedDescription)
+            }
+        }
+    }
+    
     /// Load any video into the editor (recorded or imported)
     public func loadRecordedVideo(url: URL, project: ClipFocusProject? = nil) {
         guard FileManager.default.fileExists(atPath: url.path),
@@ -684,11 +811,51 @@ public final class AppState: @unchecked Sendable {
         self.zoomKeyframes = keyframes
         self.currentTime = 0.0
         self.selectedKeyframeID = nil
+        self.selectedSegmentID = nil
+        self.selectedTrackType = nil
+        
+        // Populate video and audio segments from project or default full-span clips
+        if let vSegs = project?.videoSegments, !vSegs.isEmpty {
+            self.videoSegments = vSegs
+        } else {
+            self.videoSegments = [
+                MediaClipSegment(
+                    trackType: .video,
+                    name: url.deletingPathExtension().lastPathComponent,
+                    sourceStartTime: 0.0,
+                    timelineStartTime: 0.0,
+                    duration: self.totalDuration,
+                    isMuted: false,
+                    volume: 1.0
+                )
+            ]
+        }
+        
+        if let aSegs = project?.audioSegments, !aSegs.isEmpty {
+            self.audioSegments = aSegs
+        } else {
+            self.audioSegments = [
+                MediaClipSegment(
+                    trackType: .audio,
+                    name: self.selectedMic != "None" ? self.selectedMic : "Audio Stream",
+                    sourceStartTime: 0.0,
+                    timelineStartTime: 0.0,
+                    duration: self.totalDuration,
+                    isMuted: false,
+                    volume: 1.0
+                )
+            ]
+        }
+        
+        self.clearHistory()
         
         // Setup AVPlayer
         let player = AVPlayer(url: url)
         self.avPlayer = player
         self.setVolume(self.audioVolume)
+        
+        // Asynchronously extract audio waveform for timeline visualization
+        self.loadAudioWaveform(from: url)
         
         // Load real asset duration and natural aspect ratio asynchronously
         let asset = AVURLAsset(url: url)
@@ -696,6 +863,12 @@ public final class AppState: @unchecked Sendable {
             if let dur = try? await asset.load(.duration), dur.seconds > 0.2 {
                 await MainActor.run {
                     self.totalDuration = dur.seconds
+                    if self.videoSegments.count == 1 && self.videoSegments[0].timelineStartTime == 0 {
+                        self.videoSegments[0].duration = dur.seconds
+                    }
+                    if self.audioSegments.count == 1 && self.audioSegments[0].timelineStartTime == 0 {
+                        self.audioSegments[0].duration = dur.seconds
+                    }
                 }
             }
             if let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first {
@@ -712,177 +885,18 @@ public final class AppState: @unchecked Sendable {
             }
         }
         
-        // Setup periodic time observer for smooth playback tracking
-        let interval = CMTime(seconds: 0.03, preferredTimescale: 600)
+        // Setup periodic time observer for end-of-playback boundaries
+        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         self.timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
-            // Only update master currentTime during active playback.
-            // When paused, currentTime remains locked at the yellow playhead position!
-            if self.isPlaying && !self.isScrubbing {
-                self.currentTime = time.seconds
-                self.evaluateCurrentZoom()
-                if self.currentTime >= self.totalDuration {
-                    self.pauseVideo()
-                }
+            if self.isPlaying && !self.isScrubbing && time.seconds >= self.totalDuration {
+                self.pauseVideo()
             }
         }
         
         self.currentView = .editor
         self.pauseVideo()
         self.seek(to: 0.0, accurate: true)
-    }
-    
-    public func playVideo() {
-        if currentTime >= (totalDuration - 0.05) {
-            seek(to: 0.0, accurate: true)
-        }
-        if playbackSpeed < 0 {
-            playbackSpeed = 1.0
-        }
-        avPlayer?.rate = Float(playbackSpeed)
-        isPlaying = true
-        startPlaybackDisplayTimer()
-    }
-    
-    public func pauseVideo() {
-        avPlayer?.pause()
-        isPlaying = false
-        stopPlaybackDisplayTimer()
-    }
-    
-    private func startPlaybackDisplayTimer() {
-        stopPlaybackDisplayTimer()
-        playbackDisplayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self = self, self.isPlaying, !self.isScrubbing else { return }
-            if self.playbackSpeed > 0 {
-                if let player = self.avPlayer {
-                    let currentSec = player.currentTime().seconds
-                    if currentSec >= 0 && !currentSec.isNaN {
-                        self.currentTime = currentSec
-                        self.evaluateCurrentZoom()
-                        if self.currentTime >= self.totalDuration {
-                            self.pauseVideo()
-                            self.currentTime = self.totalDuration
-                        }
-                    }
-                }
-            } else if self.playbackSpeed < 0 {
-                // Reverse playback simulation
-                let delta = (1.0 / 60.0) * abs(self.playbackSpeed)
-                let newSec = max(0.0, self.currentTime - delta)
-                self.seek(to: newSec, accurate: false)
-                if newSec <= 0.0 {
-                    self.pauseVideo()
-                    self.playbackSpeed = 1.0
-                }
-            }
-        }
-        if let timer = playbackDisplayTimer {
-            RunLoop.main.add(timer, forMode: .common)
-        }
-    }
-    
-    private func stopPlaybackDisplayTimer() {
-        playbackDisplayTimer?.invalidate()
-        playbackDisplayTimer = nil
-    }
-    
-    public func togglePlayback() {
-        if isPlaying {
-            pauseVideo()
-        } else {
-            playVideo()
-        }
-    }
-    
-    /// Premiere Pro style Shuttle Forward (L): 1x -> 2x -> 4x -> 8x
-    public func shuttleForward() {
-        if !isPlaying || playbackSpeed <= 0 {
-            playbackSpeed = 1.0
-            playVideo()
-        } else {
-            if playbackSpeed < 2.0 {
-                setPlaybackSpeed(2.0)
-            } else if playbackSpeed < 4.0 {
-                setPlaybackSpeed(4.0)
-            } else {
-                setPlaybackSpeed(8.0)
-            }
-        }
-    }
-    
-    /// Premiere Pro style Shuttle Reverse (J): -1x -> -2x -> -4x -> -8x
-    public func shuttleReverse() {
-        if currentTime <= 0.05 {
-            seek(to: totalDuration, accurate: true)
-        }
-        if !isPlaying || playbackSpeed >= 0 {
-            avPlayer?.pause()
-            playbackSpeed = -1.0
-            isPlaying = true
-            startPlaybackDisplayTimer()
-        } else {
-            if playbackSpeed > -2.0 {
-                playbackSpeed = -2.0
-            } else if playbackSpeed > -4.0 {
-                playbackSpeed = -4.0
-            } else {
-                playbackSpeed = -8.0
-            }
-        }
-    }
-    
-    /// Premiere Pro style Shuttle Stop (K)
-    public func shuttleStop() {
-        pauseVideo()
-        playbackSpeed = 1.0
-    }
-    
-    public func setPlaybackSpeed(_ speed: Double) {
-        self.playbackSpeed = speed
-        if isPlaying && speed > 0 {
-            avPlayer?.rate = Float(speed)
-        }
-    }
-    
-    public func setVolume(_ volume: Double) {
-        self.audioVolume = volume
-        avPlayer?.volume = Float(volume)
-    }
-    
-    private var lastSeekTimestamp: TimeInterval = 0
-    
-    public func seek(to seconds: Double, accurate: Bool = false) {
-        let clamped = max(0, min(totalDuration, seconds))
-        currentTime = clamped
-        
-        let now = ProcessInfo.processInfo.systemUptime
-        if accurate || (now - lastSeekTimestamp) > 0.033 {
-            lastSeekTimestamp = now
-            let targetCMTime = CMTime(seconds: clamped, preferredTimescale: 600)
-            let tol: CMTime = accurate ? .zero : CMTime(value: 1, timescale: 30)
-            avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
-        }
-        evaluateCurrentZoom()
-    }
-    
-    public func previewHover(at seconds: Double) {
-        guard !isPlaying && !isScrubbing else { return }
-        let clamped = max(0, min(totalDuration, seconds))
-        let now = ProcessInfo.processInfo.systemUptime
-        if (now - lastSeekTimestamp) > 0.033 {
-            lastSeekTimestamp = now
-            let targetCMTime = CMTime(seconds: clamped, preferredTimescale: 600)
-            let tol = CMTime(value: 1, timescale: 30)
-            avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
-        }
-    }
-    
-    public func endHoverPreview() {
-        guard !isPlaying && !isScrubbing else { return }
-        let targetCMTime = CMTime(seconds: currentTime, preferredTimescale: 600)
-        let tol = CMTime(value: 1, timescale: 30)
-        avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
     }
     
     /// Clean up AVPlayer and release video file resources when leaving editor
@@ -1002,9 +1016,465 @@ public final class AppState: @unchecked Sendable {
         evaluateCurrentZoom()
     }
     
+    // MARK: - Active Timeline Segments & Source Mapping
+    
+    public func activeVideoSegment(at time: Double) -> MediaClipSegment? {
+        guard !isVideoTrackHidden else { return nil }
+        return videoSegments.first { time >= $0.timelineStartTime && time < $0.timelineEndTime }
+    }
+    
+    public func activeAudioSegment(at time: Double) -> MediaClipSegment? {
+        guard !isAudioMuted else { return nil }
+        return audioSegments.first { time >= $0.timelineStartTime && time < $0.timelineEndTime && !$0.isMuted }
+    }
+    
+    public func sourceVideoTime(for timelineTime: Double) -> Double? {
+        guard let vSeg = activeVideoSegment(at: timelineTime) else { return nil }
+        let offset = max(0, timelineTime - vSeg.timelineStartTime)
+        return vSeg.sourceStartTime + offset
+    }
+    
+    public func sourceAudioTime(for timelineTime: Double) -> Double? {
+        guard let aSeg = activeAudioSegment(at: timelineTime) else { return nil }
+        let offset = max(0, timelineTime - aSeg.timelineStartTime)
+        return aSeg.sourceStartTime + offset
+    }
+    
+    public func activeSourceTime(for timelineTime: Double) -> Double? {
+        return sourceVideoTime(for: timelineTime) ?? sourceAudioTime(for: timelineTime)
+    }
+    
+    public func syncPlaybackToCurrentTime(accurate: Bool = false) {
+        let t = currentTime
+        
+        // 1. Frame / Source Mapping Sync
+        if let srcTime = activeSourceTime(for: t) {
+            let targetCMTime = CMTime(seconds: srcTime, preferredTimescale: 600)
+            let tol: CMTime = accurate ? .zero : CMTime(value: 1, timescale: 30)
+            avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
+        }
+        
+        // 2. Audio Track Volume / Mute Sync
+        let aSeg = activeAudioSegment(at: t)
+        let isMute = isAudioMuted || aSeg == nil || (aSeg?.isMuted ?? false)
+        avPlayer?.isMuted = isMute
+        avPlayer?.volume = isMute ? 0.0 : Float(audioVolume * (aSeg?.volume ?? 1.0))
+        
+        evaluateCurrentZoom()
+    }
+    
+    public func playVideo() {
+        if currentTime >= (totalDuration - 0.05) {
+            seek(to: 0.0, accurate: true)
+        }
+        if playbackSpeed < 0 {
+            playbackSpeed = 1.0
+        }
+        isPlaying = true
+        
+        let t = currentTime
+        let srcTime = activeSourceTime(for: t)
+        if let st = srcTime {
+            let targetCM = CMTime(seconds: st, preferredTimescale: 600)
+            avPlayer?.seek(to: targetCM, toleranceBefore: CMTime(value: 1, timescale: 30), toleranceAfter: CMTime(value: 1, timescale: 30))
+        }
+        
+        let aSeg = activeAudioSegment(at: t)
+        let isMute = isAudioMuted || aSeg == nil || (aSeg?.isMuted ?? false)
+        avPlayer?.isMuted = isMute
+        avPlayer?.volume = isMute ? 0.0 : Float(audioVolume * (aSeg?.volume ?? 1.0))
+        
+        if srcTime != nil && playbackSpeed > 0 {
+            avPlayer?.rate = Float(playbackSpeed)
+        } else {
+            avPlayer?.pause()
+        }
+        
+        startPlaybackDisplayTimer()
+    }
+    
+    public func pauseVideo() {
+        avPlayer?.pause()
+        isPlaying = false
+        stopPlaybackDisplayTimer()
+    }
+    
+    private func startPlaybackDisplayTimer() {
+        stopPlaybackDisplayTimer()
+        playbackDisplayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isPlaying, !self.isScrubbing else { return }
+            
+            let delta = (1.0 / 60.0) * self.playbackSpeed
+            let nextTime = self.currentTime + delta
+            
+            if nextTime >= self.totalDuration {
+                self.currentTime = self.totalDuration
+                self.pauseVideo()
+                self.syncPlaybackToCurrentTime(accurate: true)
+                return
+            } else if nextTime <= 0 {
+                self.currentTime = 0
+                self.pauseVideo()
+                self.playbackSpeed = 1.0
+                self.syncPlaybackToCurrentTime(accurate: true)
+                return
+            }
+            
+            self.currentTime = nextTime
+            
+            // Media Source Sync (Handles cuts & gaps without constantly interrupting audio)
+            if let srcTime = self.activeSourceTime(for: nextTime) {
+                if let player = self.avPlayer {
+                    let playerSec = player.currentTime().seconds
+                    // If player stopped or drifted across a cut boundary (> 0.35s difference), resync seek
+                    if abs(playerSec - srcTime) > 0.35 || player.rate == 0 {
+                        let targetCM = CMTime(seconds: srcTime, preferredTimescale: 600)
+                        player.seek(to: targetCM, toleranceBefore: CMTime(value: 1, timescale: 30), toleranceAfter: CMTime(value: 1, timescale: 30))
+                        if self.playbackSpeed > 0 {
+                            player.rate = Float(self.playbackSpeed)
+                        }
+                    }
+                }
+            } else {
+                // Gap / Deleted clip (no video and no audio)
+                if self.avPlayer?.rate != 0 {
+                    self.avPlayer?.pause()
+                }
+            }
+            
+            // Audio Track Volume / Mute Sync
+            let aSeg = self.activeAudioSegment(at: nextTime)
+            let isMute = self.isAudioMuted || aSeg == nil || (aSeg?.isMuted ?? false)
+            if self.avPlayer?.isMuted != isMute {
+                self.avPlayer?.isMuted = isMute
+            }
+            let targetVol = isMute ? 0.0 : Float(self.audioVolume * (aSeg?.volume ?? 1.0))
+            if self.avPlayer?.volume != targetVol {
+                self.avPlayer?.volume = targetVol
+            }
+            
+            self.evaluateCurrentZoom()
+        }
+        if let timer = playbackDisplayTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+    
+    private func stopPlaybackDisplayTimer() {
+        playbackDisplayTimer?.invalidate()
+        playbackDisplayTimer = nil
+    }
+    
+    public func togglePlayback() {
+        if isPlaying {
+            pauseVideo()
+        } else {
+            playVideo()
+        }
+    }
+    
+    /// Premiere Pro style Shuttle Forward (L): 1x -> 2x -> 4x -> 8x
+    public func shuttleForward() {
+        if !isPlaying || playbackSpeed <= 0 {
+            playbackSpeed = 1.0
+            playVideo()
+        } else {
+            if playbackSpeed < 2.0 {
+                setPlaybackSpeed(2.0)
+            } else if playbackSpeed < 4.0 {
+                setPlaybackSpeed(4.0)
+            } else {
+                setPlaybackSpeed(8.0)
+            }
+        }
+    }
+    
+    /// Premiere Pro style Shuttle Reverse (J): -1x -> -2x -> -4x -> -8x
+    public func shuttleReverse() {
+        if currentTime <= 0.05 {
+            seek(to: totalDuration, accurate: true)
+        }
+        if !isPlaying || playbackSpeed >= 0 {
+            avPlayer?.pause()
+            playbackSpeed = -1.0
+            isPlaying = true
+            startPlaybackDisplayTimer()
+        } else {
+            if playbackSpeed > -2.0 {
+                playbackSpeed = -2.0
+            } else if playbackSpeed > -4.0 {
+                playbackSpeed = -4.0
+            } else {
+                playbackSpeed = -8.0
+            }
+        }
+    }
+    
+    /// Premiere Pro style Shuttle Stop (K)
+    public func shuttleStop() {
+        pauseVideo()
+        playbackSpeed = 1.0
+    }
+    
+    public func jumpToStart() {
+        seek(to: 0.0, accurate: true)
+    }
+    
+    public func jumpToEnd() {
+        seek(to: totalDuration, accurate: true)
+    }
+    
+    public func stepBackward(seconds: Double = 1.0) {
+        seek(to: max(0.0, currentTime - seconds), accurate: false)
+    }
+    
+    public func stepForward(seconds: Double = 1.0) {
+        seek(to: min(totalDuration, currentTime + seconds), accurate: false)
+    }
+    
+    public func setPlaybackSpeed(_ speed: Double) {
+        self.playbackSpeed = speed
+        if isPlaying && speed > 0 {
+            avPlayer?.rate = Float(speed)
+        }
+    }
+    
+    public func setVolume(_ volume: Double) {
+        self.audioVolume = volume
+        if activeAudioSegment(at: currentTime) != nil {
+            avPlayer?.volume = Float(volume)
+        } else {
+            avPlayer?.volume = 0.0
+        }
+    }
+    
+    private var lastSeekTimestamp: TimeInterval = 0
+    
+    public func seek(to seconds: Double, accurate: Bool = false) {
+        let clamped = max(0, min(totalDuration, seconds))
+        currentTime = clamped
+        
+        let now = ProcessInfo.processInfo.systemUptime
+        if accurate || (now - lastSeekTimestamp) > 0.033 {
+            lastSeekTimestamp = now
+            syncPlaybackToCurrentTime(accurate: accurate)
+        } else {
+            evaluateCurrentZoom()
+        }
+    }
+    
+    public func previewHover(at seconds: Double) {
+        guard !isPlaying && !isScrubbing else { return }
+        let clamped = max(0, min(totalDuration, seconds))
+        let now = ProcessInfo.processInfo.systemUptime
+        if (now - lastSeekTimestamp) > 0.033 {
+            lastSeekTimestamp = now
+            if let srcTime = sourceVideoTime(for: clamped) {
+                let targetCMTime = CMTime(seconds: srcTime, preferredTimescale: 600)
+                let tol = CMTime(value: 1, timescale: 30)
+                avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
+            }
+        }
+    }
+    
+    public func endHoverPreview() {
+        guard !isPlaying && !isScrubbing else { return }
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    public func selectSegment(id: UUID, trackType: TimelineTrackType) {
+        self.selectedSegmentID = id
+        self.selectedTrackType = trackType
+        self.selectedKeyframeID = nil
+    }
+    
+    // MARK: - Undo / Redo History Engine
+    private var undoStack: [EditorHistorySnapshot] = []
+    private var redoStack: [EditorHistorySnapshot] = []
+    
+    public var canUndo: Bool { !undoStack.isEmpty }
+    public var canRedo: Bool { !redoStack.isEmpty }
+    
+    public func captureHistorySnapshot() -> EditorHistorySnapshot {
+        EditorHistorySnapshot(
+            videoSegments: self.videoSegments,
+            audioSegments: self.audioSegments,
+            zoomKeyframes: self.zoomKeyframes,
+            selectedSegmentID: self.selectedSegmentID,
+            selectedTrackType: self.selectedTrackType,
+            selectedKeyframeID: self.selectedKeyframeID,
+            isVideoTrackHidden: self.isVideoTrackHidden,
+            isZoomTrackHidden: self.isZoomTrackHidden,
+            isAudioMuted: self.isAudioMuted,
+            canvasRatio: self.canvasRatio,
+            activeBackgroundIndex: self.activeBackgroundIndex,
+            activeColorIndex: self.activeColorIndex,
+            padding: self.padding,
+            inset: self.inset,
+            roundness: self.roundness,
+            shadow: self.shadow,
+            playbackSpeed: self.playbackSpeed,
+            is3DZoomEnabled: self.is3DZoomEnabled,
+            tiltIntensity: self.tiltIntensity
+        )
+    }
+    
+    public func recordUndoState() {
+        let current = captureHistorySnapshot()
+        if let last = undoStack.last, last == current {
+            return
+        }
+        undoStack.append(current)
+        if undoStack.count > 50 {
+            undoStack.removeFirst()
+        }
+        redoStack.removeAll()
+    }
+    
+    public func undo() {
+        guard let previousState = undoStack.popLast() else { return }
+        let current = captureHistorySnapshot()
+        redoStack.append(current)
+        restoreHistorySnapshot(previousState)
+    }
+    
+    public func redo() {
+        guard let nextState = redoStack.popLast() else { return }
+        let current = captureHistorySnapshot()
+        undoStack.append(current)
+        restoreHistorySnapshot(nextState)
+    }
+    
+    private func restoreHistorySnapshot(_ s: EditorHistorySnapshot) {
+        self.videoSegments = s.videoSegments
+        self.audioSegments = s.audioSegments
+        self.zoomKeyframes = s.zoomKeyframes
+        self.selectedSegmentID = s.selectedSegmentID
+        self.selectedTrackType = s.selectedTrackType
+        self.selectedKeyframeID = s.selectedKeyframeID
+        self.isVideoTrackHidden = s.isVideoTrackHidden
+        self.isZoomTrackHidden = s.isZoomTrackHidden
+        self.isAudioMuted = s.isAudioMuted
+        self.canvasRatio = s.canvasRatio
+        self.activeBackgroundIndex = s.activeBackgroundIndex
+        self.activeColorIndex = s.activeColorIndex
+        self.padding = s.padding
+        self.inset = s.inset
+        self.roundness = s.roundness
+        self.shadow = s.shadow
+        self.playbackSpeed = s.playbackSpeed
+        self.is3DZoomEnabled = s.is3DZoomEnabled
+        self.tiltIntensity = s.tiltIntensity
+        
+        evaluateCurrentZoom()
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    public func clearHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
+    
+    public func clearSelection() {
+        self.selectedSegmentID = nil
+        self.selectedTrackType = nil
+        self.selectedKeyframeID = nil
+    }
+    
+    public func deleteSelected() {
+        recordUndoState()
+        if let segID = selectedSegmentID, let type = selectedTrackType {
+            switch type {
+            case .video:
+                videoSegments.removeAll { $0.id == segID }
+            case .audio:
+                audioSegments.removeAll { $0.id == segID }
+            case .zoom:
+                zoomKeyframes.removeAll { $0.id == segID }
+            }
+            selectedSegmentID = nil
+            selectedTrackType = nil
+        } else if let kfID = selectedKeyframeID {
+            zoomKeyframes.removeAll { $0.id == kfID }
+            selectedKeyframeID = nil
+        }
+        evaluateCurrentZoom()
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    public func deleteVideoSegment(id: UUID) {
+        recordUndoState()
+        videoSegments.removeAll { $0.id == id }
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    public func deleteAudioSegment(id: UUID) {
+        recordUndoState()
+        audioSegments.removeAll { $0.id == id }
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
     public func splitAtCurrentTime() {
         let t = currentTime
-        if let idx = zoomKeyframes.firstIndex(where: { t > ($0.startTime + 0.05) && t < ($0.startTime + $0.duration - 0.05) }) {
+        var hasSplitAnything = false
+        
+        // 1. If a specific video clip is selected, split it; otherwise split any video clip intersecting playhead
+        if let targetIdx = videoSegments.firstIndex(where: { t > ($0.timelineStartTime + 0.05) && t < ($0.timelineEndTime - 0.05) && (selectedSegmentID == nil || selectedSegmentID == $0.id) }) {
+            recordUndoState()
+            let original = videoSegments[targetIdx]
+            let firstDur = t - original.timelineStartTime
+            let secondDur = original.duration - firstDur
+            
+            videoSegments[targetIdx].duration = firstDur
+            
+            let secondPart = MediaClipSegment(
+                trackType: .video,
+                name: "\(original.name) (Cut)",
+                sourceStartTime: original.sourceStartTime + firstDur,
+                timelineStartTime: t,
+                duration: secondDur,
+                isMuted: original.isMuted,
+                volume: original.volume
+            )
+            videoSegments.append(secondPart)
+            videoSegments.sort { $0.timelineStartTime < $1.timelineStartTime }
+            selectSegment(id: secondPart.id, trackType: .video)
+            hasSplitAnything = true
+        }
+        
+        // 2. If a specific audio clip is selected, split it; otherwise split any audio clip intersecting playhead
+        if let targetIdx = audioSegments.firstIndex(where: { t > ($0.timelineStartTime + 0.05) && t < ($0.timelineEndTime - 0.05) && (selectedSegmentID == nil || selectedSegmentID == $0.id) }) {
+            if !hasSplitAnything {
+                recordUndoState()
+            }
+            let original = audioSegments[targetIdx]
+            let firstDur = t - original.timelineStartTime
+            let secondDur = original.duration - firstDur
+            
+            audioSegments[targetIdx].duration = firstDur
+            
+            let secondPart = MediaClipSegment(
+                trackType: .audio,
+                name: "\(original.name) (Cut)",
+                sourceStartTime: original.sourceStartTime + firstDur,
+                timelineStartTime: t,
+                duration: secondDur,
+                isMuted: original.isMuted,
+                volume: original.volume
+            )
+            audioSegments.append(secondPart)
+            audioSegments.sort { $0.timelineStartTime < $1.timelineStartTime }
+            if !hasSplitAnything {
+                selectSegment(id: secondPart.id, trackType: .audio)
+            }
+            hasSplitAnything = true
+        }
+        
+        // 3. If a zoom keyframe intersects playhead, split it
+        if let idx = zoomKeyframes.firstIndex(where: { t > ($0.startTime + 0.05) && t < ($0.startTime + $0.duration - 0.05) && (selectedKeyframeID == nil || selectedKeyframeID == $0.id) }) {
+            if !hasSplitAnything {
+                recordUndoState()
+            }
             let original = zoomKeyframes[idx]
             let firstDuration = t - original.startTime
             let secondDuration = original.duration - firstDuration
@@ -1029,13 +1499,151 @@ public final class AppState: @unchecked Sendable {
             )
             zoomKeyframes.append(secondPart)
             zoomKeyframes.sort { $0.startTime < $1.startTime }
-            selectedKeyframeID = secondPart.id
+            if !hasSplitAnything {
+                selectedKeyframeID = secondPart.id
+            }
             evaluateCurrentZoom()
+            hasSplitAnything = true
         }
+        
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    // MARK: - Trimming & Repositioning for Video & Audio Segments
+    
+    public func trimSegmentStart(id: UUID, trackType: TimelineTrackType, newTimelineStart: Double) {
+        switch trackType {
+        case .video:
+            if let idx = videoSegments.firstIndex(where: { $0.id == id }) {
+                let seg = videoSegments[idx]
+                let oldEnd = seg.timelineEndTime
+                let others = videoSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                let prev = others.filter { $0.timelineStartTime < seg.timelineStartTime }.last
+                
+                // Cannot overlap previous clip on timeline
+                let minTimelineStart = prev != nil ? prev!.timelineEndTime : 0.0
+                // Cannot extend before the start of original source video (sourceStartTime >= 0.0)
+                let minSourceStart = seg.timelineStartTime - seg.sourceStartTime
+                let minStart = max(minTimelineStart, minSourceStart)
+                let maxStart = oldEnd - 0.2
+                
+                let clampedStart = max(minStart, min(maxStart, newTimelineStart))
+                let delta = clampedStart - seg.timelineStartTime
+                videoSegments[idx].timelineStartTime = clampedStart
+                videoSegments[idx].sourceStartTime = max(0.0, seg.sourceStartTime + delta)
+                videoSegments[idx].duration = max(0.2, oldEnd - clampedStart)
+            }
+        case .audio:
+            if let idx = audioSegments.firstIndex(where: { $0.id == id }) {
+                let seg = audioSegments[idx]
+                let oldEnd = seg.timelineEndTime
+                let others = audioSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                let prev = others.filter { $0.timelineStartTime < seg.timelineStartTime }.last
+                
+                // Cannot overlap previous clip on timeline
+                let minTimelineStart = prev != nil ? prev!.timelineEndTime : 0.0
+                // Cannot extend before the start of original source audio (sourceStartTime >= 0.0)
+                let minSourceStart = seg.timelineStartTime - seg.sourceStartTime
+                let minStart = max(minTimelineStart, minSourceStart)
+                let maxStart = oldEnd - 0.2
+                
+                let clampedStart = max(minStart, min(maxStart, newTimelineStart))
+                let delta = clampedStart - seg.timelineStartTime
+                audioSegments[idx].timelineStartTime = clampedStart
+                audioSegments[idx].sourceStartTime = max(0.0, seg.sourceStartTime + delta)
+                audioSegments[idx].duration = max(0.2, oldEnd - clampedStart)
+            }
+        case .zoom:
+            trimKeyframeStart(id: id, newStartTime: newTimelineStart)
+        }
+        syncPlaybackToCurrentTime(accurate: false)
+    }
+    
+    public func trimSegmentEnd(id: UUID, trackType: TimelineTrackType, newDuration: Double) {
+        switch trackType {
+        case .video:
+            if let idx = videoSegments.firstIndex(where: { $0.id == id }) {
+                let seg = videoSegments[idx]
+                let others = videoSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                let next = others.filter { $0.timelineStartTime > seg.timelineStartTime }.first
+                
+                // Cannot extend beyond the end of the original source video file
+                let maxSourceDur = max(0.2, totalDuration - seg.sourceStartTime)
+                // Cannot overlap next clip or extend beyond timeline totalDuration
+                let maxTimelineDur = next != nil ? max(0.2, next!.timelineStartTime - seg.timelineStartTime) : max(0.2, totalDuration - seg.timelineStartTime)
+                let maxDur = min(maxSourceDur, maxTimelineDur)
+                
+                videoSegments[idx].duration = max(0.2, min(maxDur, newDuration))
+            }
+        case .audio:
+            if let idx = audioSegments.firstIndex(where: { $0.id == id }) {
+                let seg = audioSegments[idx]
+                let others = audioSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                let next = others.filter { $0.timelineStartTime > seg.timelineStartTime }.first
+                
+                // Cannot extend beyond the end of the original source audio
+                let maxSourceDur = max(0.2, totalDuration - seg.sourceStartTime)
+                // Cannot overlap next clip or extend beyond timeline totalDuration
+                let maxTimelineDur = next != nil ? max(0.2, next!.timelineStartTime - seg.timelineStartTime) : max(0.2, totalDuration - seg.timelineStartTime)
+                let maxDur = min(maxSourceDur, maxTimelineDur)
+                
+                audioSegments[idx].duration = max(0.2, min(maxDur, newDuration))
+            }
+        case .zoom:
+            updateKeyframeDuration(id: id, newDuration: newDuration)
+        }
+        syncPlaybackToCurrentTime(accurate: false)
+    }
+    
+    public func moveSegment(id: UUID, trackType: TimelineTrackType, newTimelineStart: Double) {
+        switch trackType {
+        case .video:
+            if let idx = videoSegments.firstIndex(where: { $0.id == id }) {
+                let dur = videoSegments[idx].duration
+                let others = videoSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                let prev = others.filter { $0.timelineStartTime < videoSegments[idx].timelineStartTime }.last
+                let next = others.filter { $0.timelineStartTime >= videoSegments[idx].timelineStartTime }.first
+                let minStart = prev != nil ? prev!.timelineEndTime : 0.0
+                let maxStart = next != nil ? max(minStart, next!.timelineStartTime - dur) : max(minStart, totalDuration - dur)
+                videoSegments[idx].timelineStartTime = max(minStart, min(maxStart, newTimelineStart))
+            }
+        case .audio:
+            if let idx = audioSegments.firstIndex(where: { $0.id == id }) {
+                let dur = audioSegments[idx].duration
+                let others = audioSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                let prev = others.filter { $0.timelineStartTime < audioSegments[idx].timelineStartTime }.last
+                let next = others.filter { $0.timelineStartTime >= audioSegments[idx].timelineStartTime }.first
+                let minStart = prev != nil ? prev!.timelineEndTime : 0.0
+                let maxStart = next != nil ? max(minStart, next!.timelineStartTime - dur) : max(minStart, totalDuration - dur)
+                audioSegments[idx].timelineStartTime = max(minStart, min(maxStart, newTimelineStart))
+            }
+        case .zoom:
+            updateKeyframeStartTime(id: id, newStartTime: newTimelineStart)
+        }
+        syncPlaybackToCurrentTime(accurate: false)
+    }
+    
+    public func toggleVideoTrackVisibility() {
+        recordUndoState()
+        isVideoTrackHidden.toggle()
+        syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    public func toggleZoomTrackVisibility() {
+        recordUndoState()
+        isZoomTrackHidden.toggle()
+        evaluateCurrentZoom()
+    }
+    
+    public func toggleAudioMute() {
+        recordUndoState()
+        isAudioMuted.toggle()
+        syncPlaybackToCurrentTime(accurate: true)
     }
     
     /// Apply a 3D cinematic camera perspective preset at current playhead position
     public func apply3DAnglePreset(focusPoint: CGPoint, label: String, scale: CGFloat = 2.5) {
+        recordUndoState()
         let t = currentTime
         let keyframe = ZoomKeyframe(
             startTime: max(0, t - 0.2),
@@ -1064,7 +1672,7 @@ public final class AppState: @unchecked Sendable {
         evaluateCurrentZoom()
     }
     
-    // MARK: - Real Video Export
+    // MARK: - Real Video Export with Cut Composition
     
     public func exportVideo() {
         guard let sourceURL = recordedVideoURL else { return }
@@ -1080,37 +1688,83 @@ public final class AppState: @unchecked Sendable {
         try? FileManager.default.removeItem(at: destinationURL)
         
         isExporting = true
-        exportProgress = 0.1
+        exportProgress = 0.05
         
-        let asset = AVURLAsset(url: sourceURL)
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
-            isExporting = false
-            self.errorMessage = "Could not initialize video exporter."
-            return
-        }
-        
-        exportSession.outputURL = destinationURL
-        exportSession.outputFileType = .mp4
-        exportSession.shouldOptimizeForNetworkUse = true
-        
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
-            guard let self = self else { t.invalidate(); return }
-            if exportSession.status == .exporting {
-                self.exportProgress = max(0.1, Double(exportSession.progress))
-            }
-        }
-        
-        exportSession.exportAsynchronously { [weak self] in
-            timer.invalidate()
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.isExporting = false
-                if exportSession.status == .completed {
-                    self.exportProgress = 1.0
-                    self.exportSuccessMessage = "Video exported successfully!"
-                    NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
-                } else {
-                    self.errorMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
+        Task {
+            do {
+                let asset = AVURLAsset(url: sourceURL)
+                let composition = AVMutableComposition()
+                
+                // 1. Build Video Track Composition
+                if !self.isVideoTrackHidden && !self.videoSegments.isEmpty {
+                    if let assetVideoTracks = try? await asset.loadTracks(withMediaType: .video),
+                       let assetVideoTrack = assetVideoTracks.first,
+                       let compVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                        
+                        if let transform = try? await assetVideoTrack.load(.preferredTransform) {
+                            compVideoTrack.preferredTransform = transform
+                        }
+                        
+                        for vSeg in self.videoSegments {
+                            let sourceRange = CMTimeRange(
+                                start: CMTime(seconds: vSeg.sourceStartTime, preferredTimescale: 600),
+                                duration: CMTime(seconds: vSeg.duration, preferredTimescale: 600)
+                            )
+                            let atTime = CMTime(seconds: vSeg.timelineStartTime, preferredTimescale: 600)
+                            try? compVideoTrack.insertTimeRange(sourceRange, of: assetVideoTrack, at: atTime)
+                        }
+                    }
+                }
+                
+                // 2. Build Audio Track Composition
+                if !self.isAudioMuted && !self.audioSegments.isEmpty {
+                    if let assetAudioTracks = try? await asset.loadTracks(withMediaType: .audio),
+                       let assetAudioTrack = assetAudioTracks.first,
+                       let compAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                        
+                        for aSeg in self.audioSegments where !aSeg.isMuted {
+                            let sourceRange = CMTimeRange(
+                                start: CMTime(seconds: aSeg.sourceStartTime, preferredTimescale: 600),
+                                duration: CMTime(seconds: aSeg.duration, preferredTimescale: 600)
+                            )
+                            let atTime = CMTime(seconds: aSeg.timelineStartTime, preferredTimescale: 600)
+                            try? compAudioTrack.insertTimeRange(sourceRange, of: assetAudioTrack, at: atTime)
+                        }
+                    }
+                }
+                
+                guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+                    await MainActor.run {
+                        self.isExporting = false
+                        self.errorMessage = "Could not initialize video exporter."
+                    }
+                    return
+                }
+                
+                exportSession.outputURL = destinationURL
+                exportSession.outputFileType = .mp4
+                exportSession.shouldOptimizeForNetworkUse = true
+                
+                let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
+                    guard let self = self else { t.invalidate(); return }
+                    if exportSession.status == .exporting {
+                        self.exportProgress = max(0.1, Double(exportSession.progress))
+                    }
+                }
+                
+                exportSession.exportAsynchronously { [weak self] in
+                    timer.invalidate()
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        self.isExporting = false
+                        if exportSession.status == .completed {
+                            self.exportProgress = 1.0
+                            self.exportSuccessMessage = "Video exported successfully!"
+                            NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
+                        } else {
+                            self.errorMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
+                        }
+                    }
                 }
             }
         }
@@ -1165,3 +1819,27 @@ public final class AppState: @unchecked Sendable {
         }
     }
 }
+
+/// Snapshot of editor state for Undo / Redo history management
+public struct EditorHistorySnapshot: Equatable {
+    public var videoSegments: [MediaClipSegment]
+    public var audioSegments: [MediaClipSegment]
+    public var zoomKeyframes: [ZoomKeyframe]
+    public var selectedSegmentID: UUID?
+    public var selectedTrackType: TimelineTrackType?
+    public var selectedKeyframeID: UUID?
+    public var isVideoTrackHidden: Bool
+    public var isZoomTrackHidden: Bool
+    public var isAudioMuted: Bool
+    public var canvasRatio: String
+    public var activeBackgroundIndex: Int
+    public var activeColorIndex: Int?
+    public var padding: Double
+    public var inset: Double
+    public var roundness: Double
+    public var shadow: Double
+    public var playbackSpeed: Double
+    public var is3DZoomEnabled: Bool
+    public var tiltIntensity: Double
+}
+

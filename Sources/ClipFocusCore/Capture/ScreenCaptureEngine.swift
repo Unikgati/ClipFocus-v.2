@@ -11,6 +11,7 @@ public struct CaptureSessionConfig: Sendable {
     public var frameRate: Int
     public var captureSystemAudio: Bool
     public var captureMicrophoneAudio: Bool
+    public var targetMicrophoneName: String?
     public var showHardwareCursor: Bool // We usually hide hardware cursor in raw stream to render styled cursor overlay
     public var sourceRect: CGRect?
     public var targetWindowID: CGWindowID?
@@ -23,6 +24,7 @@ public struct CaptureSessionConfig: Sendable {
         frameRate: Int = 60,
         captureSystemAudio: Bool = true,
         captureMicrophoneAudio: Bool = true,
+        targetMicrophoneName: String? = nil,
         showHardwareCursor: Bool = false,
         sourceRect: CGRect? = nil,
         targetWindowID: CGWindowID? = nil,
@@ -34,6 +36,7 @@ public struct CaptureSessionConfig: Sendable {
         self.frameRate = frameRate
         self.captureSystemAudio = captureSystemAudio
         self.captureMicrophoneAudio = captureMicrophoneAudio
+        self.targetMicrophoneName = targetMicrophoneName
         self.showHardwareCursor = showHardwareCursor
         self.sourceRect = sourceRect
         self.targetWindowID = targetWindowID
@@ -51,11 +54,13 @@ public enum CaptureState: String, Sendable {
 }
 
 /// ScreenCaptureKit engine for high-performance macOS screen and audio recording
-public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
+public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutput, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     
     public private(set) var state: CaptureState = .idle
     public var isPaused: Bool = false
     private var stream: SCStream?
+    private var micCaptureSession: AVCaptureSession?
+    private var micAudioOutput: AVCaptureAudioDataOutput?
     private var assetWriter: AVAssetWriter?
     private var videoWriterInput: AVAssetWriterInput?
     private var audioWriterInput: AVAssetWriterInput?
@@ -73,6 +78,9 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
     private func cleanup() {
         self.state = .idle
         self.stream = nil
+        self.micCaptureSession?.stopRunning()
+        self.micCaptureSession = nil
+        self.micAudioOutput = nil
         self.assetWriter = nil
         self.videoWriterInput = nil
         self.audioWriterInput = nil
@@ -190,7 +198,8 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
                 writer.add(videoInput)
             }
             
-            if config.captureSystemAudio {
+            let shouldCaptureAudio = config.captureSystemAudio || config.captureMicrophoneAudio
+            if shouldCaptureAudio {
                 let audioSettings: [String: Any] = [
                     AVFormatIDKey: kAudioFormatMPEG4AAC,
                     AVSampleRateKey: 48000,
@@ -210,6 +219,37 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             
             // Start writer to transition to writing state
             writer.startWriting()
+            
+            // Setup Microphone Audio Capture if requested
+            if config.captureMicrophoneAudio {
+                let micSession = AVCaptureSession()
+                micSession.beginConfiguration()
+                
+                let micDevice: AVCaptureDevice?
+                if let micName = config.targetMicrophoneName, !micName.isEmpty, micName != "None" {
+                    let discovery = AVCaptureDevice.DiscoverySession(
+                        deviceTypes: [.microphone, .external],
+                        mediaType: .audio,
+                        position: .unspecified
+                    )
+                    micDevice = discovery.devices.first(where: { $0.localizedName == micName }) ?? AVCaptureDevice.default(for: .audio)
+                } else {
+                    micDevice = AVCaptureDevice.default(for: .audio)
+                }
+                
+                if let device = micDevice, let input = try? AVCaptureDeviceInput(device: device), micSession.canAddInput(input) {
+                    micSession.addInput(input)
+                    let micOutput = AVCaptureAudioDataOutput()
+                    micOutput.setSampleBufferDelegate(self, queue: processingQueue)
+                    if micSession.canAddOutput(micOutput) {
+                        micSession.addOutput(micOutput)
+                        self.micAudioOutput = micOutput
+                    }
+                }
+                micSession.commitConfiguration()
+                micSession.startRunning()
+                self.micCaptureSession = micSession
+            }
             
             // Initialize SCStream
             let scStream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
@@ -382,6 +422,21 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             
         @unknown default:
             break
+        }
+    }
+    
+    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate (Microphone)
+    
+    public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard state == .recording, !isPaused, sampleBuffer.isValid else { return }
+        guard let writer = assetWriter, writer.status == .writing else { return }
+        guard self.isSessionStarted, let startTime = self.sessionStartTime else { return }
+        
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard pts.isValid && !pts.isIndefinite && pts >= startTime else { return }
+        
+        if let audioInput = audioWriterInput, audioInput.isReadyForMoreMediaData {
+            audioInput.append(sampleBuffer)
         }
     }
 }

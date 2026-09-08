@@ -440,10 +440,10 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let progress = (time - zoomInStart) / max(0.001, transIn)
                 let eased = easyEaseInOut(progress)
                 
-                let targetFocus = smoothCameraFocus(at: zoomInEnd, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 let currentScale = 1.0 + (kf.scale - 1.0) * CGFloat(eased)
-                let currentX = 0.5 + (targetFocus.x - 0.5) * CGFloat(eased)
-                let currentY = 0.5 + (targetFocus.y - 0.5) * CGFloat(eased)
+                let liveTargetFocus = smoothCameraFocus(at: time, from: validEvents, basePoint: kf.focusPoint, scale: currentScale)
+                let currentX = 0.5 + (liveTargetFocus.x - 0.5) * CGFloat(eased)
+                let currentY = 0.5 + (liveTargetFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
                 
                 let targetAngles = is3D ? kf.tiltPreset.angles(
@@ -552,11 +552,11 @@ public final class AutoZoomEngine: @unchecked Sendable {
             if !hasNextAdjacent && time >= zoomOutStart && time <= zoomOutEnd {
                 let progress = (time - zoomOutStart) / max(0.001, transOut)
                 let eased = easyEaseInOut(progress)
-                let holdFocus = smoothCameraFocus(at: zoomOutStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
-                
                 let currentScale = kf.scale - (kf.scale - 1.0) * CGFloat(eased)
-                let currentX = holdFocus.x - (holdFocus.x - 0.5) * CGFloat(eased)
-                let currentY = holdFocus.y - (holdFocus.y - 0.5) * CGFloat(eased)
+                let liveHoldFocus = smoothCameraFocus(at: time, from: validEvents, basePoint: kf.focusPoint, scale: currentScale)
+                
+                let currentX = liveHoldFocus.x - (liveHoldFocus.x - 0.5) * CGFloat(eased)
+                let currentY = liveHoldFocus.y - (liveHoldFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
                 
                 let fullAngles = is3D ? kf.tiltPreset.angles(

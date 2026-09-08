@@ -199,11 +199,45 @@ public struct LauncherModalView: View {
                     }
                     
                     // 2. Microphone Row (Custom Dropdown)
-                    CustomDeviceDropdown(
-                        iconName: appState.selectedMic == "None" ? "mic.slash" : "mic",
-                        options: appState.availableMics,
-                        selection: $appState.selectedMic
-                    )
+                    if !appState.hasMicPermission {
+                        Button(action: {
+                            appState.requestMicrophonePermission()
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "mic.slash")
+                                    .font(.system(size: 13))
+                                    .frame(width: 32, height: 32)
+                                    .background(Color(red: 0.13, green: 0.15, blue: 0.20))
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    .foregroundStyle(Color(white: 0.50))
+                                
+                                HStack {
+                                    Text("Enable microphone...")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Color(white: 0.55))
+                                        .lineLimit(1)
+                                    
+                                    Spacer(minLength: 4)
+                                    
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(Color(white: 0.40))
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(red: 0.13, green: 0.15, blue: 0.20))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        CustomDeviceDropdown(
+                            iconName: appState.selectedMic == "None" ? "mic.slash" : "mic",
+                            options: appState.availableMics,
+                            selection: $appState.selectedMic
+                        )
+                    }
                     
                     // 3. System Audio Row (Custom Dropdown)
                     CustomDeviceDropdown(

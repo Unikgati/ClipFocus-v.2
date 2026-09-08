@@ -55,6 +55,7 @@ public final class CaptureManager: @unchecked Sendable {
         mode: String = "Full Screen",
         captureMicrophoneAudio: Bool = true,
         captureSystemAudio: Bool = true,
+        targetMicrophoneName: String? = nil,
         sourceRect: CGRect? = nil,
         targetWindowID: CGWindowID? = nil,
         excludedWindowIDs: [CGWindowID] = []
@@ -94,6 +95,7 @@ public final class CaptureManager: @unchecked Sendable {
             frameRate: 60,
             captureSystemAudio: captureSystemAudio,
             captureMicrophoneAudio: captureMicrophoneAudio,
+            targetMicrophoneName: targetMicrophoneName,
             showHardwareCursor: true, // Native hardware cursor captured crisply in video stream
             sourceRect: sourceRect,
             targetWindowID: targetWindowID,

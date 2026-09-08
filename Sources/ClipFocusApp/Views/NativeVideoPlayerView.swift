@@ -103,17 +103,9 @@ public final class CinematicPlayerNSView: NSView {
         let fx = max(0.0, min(1.0, currentFocusPoint.x))
         let fy = max(0.0, min(1.0, currentFocusPoint.y))
         
-        // Intelligent adaptive framing:
-        // Calculate safe focus bounds so cursor and surrounding context are guaranteed inside the viewport
-        let halfSpanX = 0.5 / scale
-        let halfSpanY = 0.5 / scale
-        
-        let safeFx = max(halfSpanX, min(1.0 - halfSpanX, fx))
-        let safeFy = max(halfSpanY, min(1.0 - halfSpanY, fy))
-        
-        // Exact viewport translation: centers the cursor / target point right in front of the viewer
-        let transX = (0.5 - safeFx) * bounds.width * scale + (currentPositionX * 2.0)
-        let transY = (0.5 - safeFy) * bounds.height * scale + (currentPositionY * 2.0)
+        // Exact viewport translation: centers the camera focus point smoothly
+        let transX = (0.5 - fx) * bounds.width * scale + (currentPositionX * 2.0)
+        let transY = (0.5 - fy) * bounds.height * scale + (currentPositionY * 2.0)
         
         // Dynamic 3D depth translation (Z-elevation) brings card closer to user in 3D space
         let elevationZ: CGFloat = is3DEnabled ? min(120.0, (scale - 1.0) * 65.0) : 0.0

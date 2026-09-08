@@ -160,36 +160,57 @@ public struct FloatingControlBarView: View {
                 .menuIndicator(.hidden)
             }
             
-            // 4. Microphone Menu
-            Menu {
-                ForEach(appState.availableMics, id: \.self) { mic in
-                    Button(action: { appState.selectedMic = mic }) {
-                        if appState.selectedMic == mic {
-                            Label(mic, systemImage: "checkmark")
-                        } else {
-                            Text(mic)
+            // 4. Microphone Menu / Permission
+            if !appState.hasMicPermission {
+                Button(action: {
+                    appState.requestMicrophonePermission()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mic.slash")
+                            .font(.system(size: 12))
+                        Text("Enable mic per...")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .foregroundStyle(Color(white: 0.85))
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(Color(red: 0.14, green: 0.16, blue: 0.22))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Menu {
+                    ForEach(appState.availableMics, id: \.self) { mic in
+                        Button(action: { appState.selectedMic = mic }) {
+                            if appState.selectedMic == mic {
+                                Label(mic, systemImage: "checkmark")
+                            } else {
+                                Text(mic)
+                            }
                         }
                     }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: appState.selectedMic == "None" ? "mic.slash" : "mic")
+                            .font(.system(size: 12))
+                        Text(appState.selectedMic)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                    }
+                    .foregroundStyle(Color(white: 0.85))
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(Color(red: 0.14, green: 0.16, blue: 0.22))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: appState.selectedMic == "None" ? "mic.slash" : "mic")
-                        .font(.system(size: 12))
-                    Text(appState.selectedMic)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 7, weight: .bold))
-                }
-                .foregroundStyle(Color(white: 0.85))
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(Color(red: 0.14, green: 0.16, blue: 0.22))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
             }
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
             
             // 5. System Audio Menu
             Menu {

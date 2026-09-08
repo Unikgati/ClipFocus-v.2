@@ -167,6 +167,8 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
     // Non-destructive timeline keyframes & annotations
     public var zoomKeyframes: [ZoomKeyframe]
     public var subtitles: [SubtitleSegment]
+    public var videoSegments: [MediaClipSegment]
+    public var audioSegments: [MediaClipSegment]
     
     public init(
         id: UUID = UUID(),
@@ -182,7 +184,9 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
         cursorSettings: CursorVisualSettings = CursorVisualSettings(),
         webcamSettings: WebcamLayoutSettings = WebcamLayoutSettings(),
         zoomKeyframes: [ZoomKeyframe] = [],
-        subtitles: [SubtitleSegment] = []
+        subtitles: [SubtitleSegment] = [],
+        videoSegments: [MediaClipSegment] = [],
+        audioSegments: [MediaClipSegment] = []
     ) {
         self.id = id
         self.title = title
@@ -198,5 +202,7 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
         self.webcamSettings = webcamSettings
         self.zoomKeyframes = zoomKeyframes
         self.subtitles = subtitles
+        self.videoSegments = videoSegments
+        self.audioSegments = audioSegments
     }
 }
