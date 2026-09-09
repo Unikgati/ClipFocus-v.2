@@ -282,7 +282,16 @@ public final class AutoZoomEngine: @unchecked Sendable {
         let dt = e1.timestamp - e0.timestamp
         if dt <= 0.001 { return p0 }
         
-        let progress = max(0.0, min(1.0, (time - e0.timestamp) / dt))
+        // For long telemetry pauses (> 0.20s), the mouse was stationary at p0
+        // and only began moving in the window immediately before e1.
+        // For active movement (dt <= 0.20s), interpolate smoothly across the entire dt.
+        let motionDur = min(dt, 0.20)
+        let motionStart = e1.timestamp - motionDur
+        if time <= motionStart {
+            return p0
+        }
+        
+        let progress = max(0.0, min(1.0, (time - motionStart) / motionDur))
         // Smoothstep (3t^2 - 2t^3) removes sharp C0 velocity kinks between discrete telemetry samples
         let smoothP = progress * progress * (3.0 - 2.0 * progress)
         let x = p0.x + (p1.x - p0.x) * CGFloat(smoothP)
@@ -321,9 +330,10 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let excess = absDx - innerDeadzoneX
                 let span = max(0.001, outerSpanX - innerDeadzoneX)
                 let t = min(1.0, excess / span)
-                // Smoothstep (3t^2 - 2t^3)
+                // Smoothstep (3t^2 - 2t^3): 0 at t=0 with 0 slope, 1 at t=1 with 0 slope
+                // Guarantees pure C^2 continuous acceleration across safe-zone boundaries (zero jitter/kicks)
                 let factor = CGFloat(t * t * (3.0 - 2.0 * Double(t)))
-                shiftX = (dx > 0 ? 1.0 : -1.0) * (excess + (absDx * factor * 0.35))
+                shiftX = (dx > 0 ? 1.0 : -1.0) * (excess * factor)
             }
             
             var shiftY: CGFloat = 0.0
@@ -332,27 +342,51 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let span = max(0.001, outerSpanY - innerDeadzoneY)
                 let t = min(1.0, excess / span)
                 let factor = CGFloat(t * t * (3.0 - 2.0 * Double(t)))
-                shiftY = (dy > 0 ? 1.0 : -1.0) * (excess + (absDy * factor * 0.35))
+                shiftY = (dy > 0 ? 1.0 : -1.0) * (excess * factor)
             }
             
-            let camX = basePoint.x + shiftX
-            let camY = basePoint.y + shiftY
-            
-            // Strictly clamp camera to keep entire viewport within [0.0, 1.0]
-            let clampedX = max(halfSpanX, min(1.0 - halfSpanX, camX))
-            let clampedY = max(halfSpanY, min(1.0 - halfSpanY, camY))
-            return CGPoint(x: clampedX, y: clampedY)
+            // Return unconstrained continuous position for convolution filter
+            // (Clamping is applied to final convolved result to prevent discrete sample-tap popping)
+            return CGPoint(x: basePoint.x + shiftX, y: basePoint.y + shiftY)
         }
         
-        // Compact 7-point Gaussian smoothing window (avoids erratic wide lookahead ripples)
+        // Ultra-Smooth Causal Cinema Inertia Kernel (~280ms effective delay, ~0.64s past horizon)
+        // Strictly uniform 50Hz grid (dt = 0.02s) eliminates discrete tap-aliasing ripple/jitter
+        // Strictly Causal (dt <= 0.0): Zero future lookahead leaks. Camera never twitches in anticipation of sudden moves.
         let sampleOffsets: [(dt: Double, weight: Double)] = [
-            (-0.14, 0.06),
-            (-0.10, 0.10),
-            (-0.05, 0.18),
-            (0.0,   0.28),
-            (0.04,  0.20),
-            (0.08,  0.12),
-            (0.12,  0.06)
+            ( 0.00, 0.006126),
+            (-0.02, 0.008433),
+            (-0.04, 0.011336),
+            (-0.06, 0.014882),
+            (-0.08, 0.019080),
+            (-0.10, 0.023891),
+            (-0.12, 0.029216),
+            (-0.14, 0.034890),
+            (-0.16, 0.040693),
+            (-0.18, 0.046351),
+            (-0.20, 0.051560),
+            (-0.22, 0.056013),
+            (-0.24, 0.059428),
+            (-0.26, 0.061575),
+            (-0.28, 0.062308),
+            (-0.30, 0.061575),
+            (-0.32, 0.059428),
+            (-0.34, 0.056013),
+            (-0.36, 0.051560),
+            (-0.38, 0.046351),
+            (-0.40, 0.040693),
+            (-0.42, 0.034890),
+            (-0.44, 0.029216),
+            (-0.46, 0.023891),
+            (-0.48, 0.019080),
+            (-0.50, 0.014882),
+            (-0.52, 0.011336),
+            (-0.54, 0.008433),
+            (-0.56, 0.006126),
+            (-0.58, 0.004347),
+            (-0.60, 0.003012),
+            (-0.62, 0.002038),
+            (-0.64, 0.001347),
         ]
         
         var totalWeight: CGFloat = 0.0
@@ -379,7 +413,11 @@ public final class AutoZoomEngine: @unchecked Sendable {
         }
         
         let curPos = cursorPosition(at: time, from: events, fallback: basePoint)
-        return computePushTarget(curPos)
+        let fallbackTarget = computePushTarget(curPos)
+        return CGPoint(
+            x: max(halfSpanX, min(1.0 - halfSpanX, fallbackTarget.x)),
+            y: max(halfSpanY, min(1.0 - halfSpanY, fallbackTarget.y))
+        )
     }
     
     /// Calculate the interpolated viewport (scale, center, 3D tilt, and dynamic motion blur) at any playback timestamp

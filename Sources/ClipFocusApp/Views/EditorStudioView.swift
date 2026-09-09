@@ -31,6 +31,7 @@ public struct EditorStudioView: View {
     @State private var keyMonitor: Any? = nil
     @State private var gestureMonitor: Any? = nil
     @State private var isHoveringTimelineArea: Bool = false
+    @State private var marqueeRect: CGRect? = nil
     
     public init(appState: AppState) {
         self.appState = appState
@@ -985,6 +986,75 @@ public struct EditorStudioView: View {
                         ZStack(alignment: .topLeading) {
                             Color(red: 0.07, green: 0.08, blue: 0.11)
                                 .frame(width: contentWidth, height: geo.size.height)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                                        .onChanged { value in
+                                            let start = value.startLocation
+                                            let cur = value.location
+                                            let box = CGRect(
+                                                x: min(start.x, cur.x),
+                                                y: min(start.y, cur.y),
+                                                width: max(1, abs(cur.x - start.x)),
+                                                height: max(1, abs(cur.y - start.y))
+                                            )
+                                            self.marqueeRect = box
+                                            
+                                            let isShift = NSEvent.modifierFlags.contains(.shift)
+                                            let isCmd = NSEvent.modifierFlags.contains(.command)
+                                            
+                                            let startX = box.minX - 10
+                                            let endX = box.maxX - 10
+                                            let startSec = max(0, Double(startX / trackWidth) * totalDur)
+                                            let endSec = min(totalDur, Double(endX / trackWidth) * totalDur)
+                                            
+                                            var hitKeyframeIDs: Set<UUID> = []
+                                            var hitVideoIDs: Set<UUID> = []
+                                            var hitAudioIDs: Set<UUID> = []
+                                            
+                                            if box.maxY >= 56 && box.minY <= 106 {
+                                                for kf in appState.zoomKeyframes {
+                                                    let kfEnd = kf.startTime + kf.duration
+                                                    if kf.startTime <= endSec && kfEnd >= startSec {
+                                                        hitKeyframeIDs.insert(kf.id)
+                                                    }
+                                                }
+                                            }
+                                            
+                                            if box.maxY >= 20 && box.minY <= 64 {
+                                                for seg in appState.videoSegments {
+                                                    if seg.timelineStartTime <= endSec && seg.timelineEndTime >= startSec {
+                                                        hitVideoIDs.insert(seg.id)
+                                                    }
+                                                }
+                                            }
+                                            
+                                            if box.maxY >= 98 && box.minY <= 145 {
+                                                for seg in appState.audioSegments {
+                                                    if seg.timelineStartTime <= endSec && seg.timelineEndTime >= startSec {
+                                                        hitAudioIDs.insert(seg.id)
+                                                    }
+                                                }
+                                            }
+                                            
+                                            if !hitKeyframeIDs.isEmpty {
+                                                activeSidebarTab = "camera"
+                                                appState.selectMultipleKeyframes(ids: hitKeyframeIDs, isAdd: isShift || isCmd)
+                                            } else if !hitVideoIDs.isEmpty {
+                                                activeSidebarTab = "canvas"
+                                                appState.selectMultipleSegments(ids: hitVideoIDs, trackType: .video, isAdd: isShift || isCmd)
+                                            } else if !hitAudioIDs.isEmpty {
+                                                appState.selectMultipleSegments(ids: hitAudioIDs, trackType: .audio, isAdd: isShift || isCmd)
+                                            } else if !(isShift || isCmd) {
+                                                appState.clearSelection()
+                                            }
+                                        }
+                                        .onEnded { _ in
+                                            withAnimation(.easeOut(duration: 0.12)) {
+                                                self.marqueeRect = nil
+                                            }
+                                        }
+                                )
                             
                             VStack(alignment: .leading, spacing: 6) {
                             // 1. Dynamic Ruler
@@ -1012,7 +1082,11 @@ public struct EditorStudioView: View {
                             .frame(height: 32)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                appState.clearSelection()
+                                let isShift = NSEvent.modifierFlags.contains(.shift)
+                                let isCmd = NSEvent.modifierFlags.contains(.command)
+                                if !(isShift || isCmd) {
+                                    appState.clearSelection()
+                                }
                                 if let sec = hoverTimelineSec {
                                     appState.seek(to: sec, accurate: true)
                                 }
@@ -1043,13 +1117,17 @@ public struct EditorStudioView: View {
                                         }
                                     }
                                     .onTapGesture(count: 1) {
+                                        let isShift = NSEvent.modifierFlags.contains(.shift)
+                                        let isCmd = NSEvent.modifierFlags.contains(.command)
                                         let clickSec = hoverTimelineSec ?? appState.currentTime
                                         if let kf = appState.zoomKeyframes.first(where: { clickSec >= $0.startTime && clickSec < ($0.startTime + $0.duration) }) {
-                                            appState.selectKeyframe(id: kf.id)
+                                            appState.selectKeyframe(id: kf.id, isAdd: isShift || isCmd, isRange: isShift, seekTime: clickSec)
                                             activeSidebarTab = "camera"
                                         } else {
                                             appState.seek(to: clickSec, accurate: true)
-                                            appState.clearSelection()
+                                            if !(isShift || isCmd) {
+                                                appState.clearSelection()
+                                            }
                                         }
                                     }
                                 
@@ -1090,7 +1168,11 @@ public struct EditorStudioView: View {
                             .frame(height: 28)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                appState.clearSelection()
+                                let isShift = NSEvent.modifierFlags.contains(.shift)
+                                let isCmd = NSEvent.modifierFlags.contains(.command)
+                                if !(isShift || isCmd) {
+                                    appState.clearSelection()
+                                }
                                 if let sec = hoverTimelineSec {
                                     appState.seek(to: sec, accurate: true)
                                 }
@@ -1137,6 +1219,20 @@ public struct EditorStudioView: View {
                             )
                             .offset(x: playheadX)
                             .allowsHitTesting(false)
+                        
+                        // Interactive Marquee Selection Box Overlay (Rubberband Box)
+                        if let box = marqueeRect {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color(red: 0.18, green: 0.55, blue: 0.95).opacity(0.18))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .stroke(Color(red: 0.35, green: 0.75, blue: 1.0).opacity(0.85), lineWidth: 1)
+                                )
+                                .frame(width: box.width, height: box.height)
+                                .position(x: box.midX, y: box.midY)
+                                .allowsHitTesting(false)
+                                .zIndex(90)
+                        }
                         }
                         .frame(width: contentWidth, height: geo.size.height, alignment: .topLeading)
                         .onContinuousHover(coordinateSpace: .local) { phase in
@@ -1409,7 +1505,7 @@ struct VideoClipTimelineItemView: View {
         let durationRatio = max(0.005, min(1.0, currentSeg.duration / totalDur))
         let xPos = CGFloat(startRatio) * trackWidth
         let blockW = max(20, CGFloat(durationRatio) * trackWidth)
-        let isSelected = appState.selectedSegmentID == currentSeg.id && appState.selectedTrackType == .video
+        let isSelected = appState.selectedSegmentIDs.contains(currentSeg.id) && appState.selectedTrackType == .video
         
         ZStack(alignment: .leading) {
             // Clip background
@@ -1446,7 +1542,9 @@ struct VideoClipTimelineItemView: View {
                                 .onChanged { value in
                                     appState.isScrubbing = true
                                     activeSidebarTab = "canvas"
-                                    appState.selectSegment(id: currentSeg.id, trackType: .video)
+                                    if !appState.selectedSegmentIDs.contains(currentSeg.id) {
+                                        appState.selectSegment(id: currentSeg.id, trackType: .video)
+                                    }
                                     if dragStart_StartSec == nil {
                                         appState.recordUndoState()
                                         dragStart_StartSec = currentSeg.timelineStartTime
@@ -1498,8 +1596,10 @@ struct VideoClipTimelineItemView: View {
                     if hovering { NSCursor.openHand.set() }
                 }
                 .onTapGesture {
+                    let isShift = NSEvent.modifierFlags.contains(.shift)
+                    let isCmd = NSEvent.modifierFlags.contains(.command)
                     activeSidebarTab = "canvas"
-                    appState.selectSegment(id: currentSeg.id, trackType: .video)
+                    appState.selectSegment(id: currentSeg.id, trackType: .video, isAdd: isShift || isCmd, isRange: isShift)
                 }
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
@@ -1586,7 +1686,7 @@ struct AudioClipTimelineItemView: View {
         let durationRatio = max(0.005, min(1.0, currentSeg.duration / totalDur))
         let xPos = CGFloat(startRatio) * trackWidth
         let blockW = max(20, CGFloat(durationRatio) * trackWidth)
-        let isSelected = appState.selectedSegmentID == currentSeg.id && appState.selectedTrackType == .audio
+        let isSelected = appState.selectedSegmentIDs.contains(currentSeg.id) && appState.selectedTrackType == .audio
         let isMuted = currentSeg.isMuted || appState.isAudioMuted
         
         ZStack(alignment: .leading) {
@@ -1682,7 +1782,9 @@ struct AudioClipTimelineItemView: View {
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
                                     appState.isScrubbing = true
-                                    appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                                    if !appState.selectedSegmentIDs.contains(currentSeg.id) {
+                                        appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                                    }
                                     if dragStart_StartSec == nil {
                                         appState.recordUndoState()
                                         dragStart_StartSec = currentSeg.timelineStartTime
@@ -1727,13 +1829,17 @@ struct AudioClipTimelineItemView: View {
                     if hovering { NSCursor.openHand.set() }
                 }
                 .onTapGesture {
-                    appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                    let isShift = NSEvent.modifierFlags.contains(.shift)
+                    let isCmd = NSEvent.modifierFlags.contains(.command)
+                    appState.selectSegment(id: currentSeg.id, trackType: .audio, isAdd: isShift || isCmd, isRange: isShift)
                 }
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                         .onChanged { value in
                             appState.isScrubbing = true
-                            appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                            if !appState.selectedSegmentIDs.contains(currentSeg.id) {
+                                appState.selectSegment(id: currentSeg.id, trackType: .audio)
+                            }
                             if dragStart_StartSec == nil {
                                 appState.recordUndoState()
                                 dragStart_StartSec = currentSeg.timelineStartTime
@@ -1814,7 +1920,7 @@ struct KeyframeTimelineItemView: View {
         let durationRatio = max(0.005, min(1.0, currentKf.duration / totalDur))
         let xPos = CGFloat(startRatio) * trackWidth
         let blockW = max(18, CGFloat(durationRatio) * trackWidth)
-        let isSelected = appState.selectedKeyframeID == currentKf.id
+        let isSelected = appState.selectedKeyframeIDs.contains(currentKf.id)
         
         ZStack(alignment: .leading) {
             // Clean Modern Block Container (Zero intrusive white pills)
@@ -1852,7 +1958,7 @@ struct KeyframeTimelineItemView: View {
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
                                     appState.isScrubbing = true
-                                    if appState.selectedKeyframeID != currentKf.id {
+                                    if !appState.selectedKeyframeIDs.contains(currentKf.id) {
                                         activeSidebarTab = "camera"
                                         appState.selectKeyframe(id: currentKf.id)
                                     }
@@ -1900,13 +2006,15 @@ struct KeyframeTimelineItemView: View {
                     }
                 }
                 .onTapGesture {
+                    let isShift = NSEvent.modifierFlags.contains(.shift)
+                    let isCmd = NSEvent.modifierFlags.contains(.command)
                     activeSidebarTab = "camera"
-                    appState.selectKeyframe(id: currentKf.id)
+                    appState.selectKeyframe(id: currentKf.id, isAdd: isShift || isCmd, isRange: isShift)
                 }
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 3, coordinateSpace: .named("TimelineTrackContainer"))
                         .onChanged { value in
-                            if appState.selectedKeyframeID != currentKf.id {
+                            if !appState.selectedKeyframeIDs.contains(currentKf.id) {
                                 activeSidebarTab = "camera"
                                 appState.selectKeyframe(id: currentKf.id)
                             }
@@ -1947,7 +2055,7 @@ struct KeyframeTimelineItemView: View {
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
                                     appState.isScrubbing = true
-                                    if appState.selectedKeyframeID != currentKf.id {
+                                    if !appState.selectedKeyframeIDs.contains(currentKf.id) {
                                         activeSidebarTab = "camera"
                                         appState.selectKeyframe(id: currentKf.id)
                                     }

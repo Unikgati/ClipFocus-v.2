@@ -106,7 +106,19 @@ public final class AppState: @unchecked Sendable {
     public var zoomKeyframes: [ZoomKeyframe] = []
     public var videoSegments: [MediaClipSegment] = []
     public var audioSegments: [MediaClipSegment] = []
-    public var selectedSegmentID: UUID? = nil
+    public var selectedSegmentIDs: Set<UUID> = []
+    public var selectedKeyframeIDs: Set<UUID> = []
+    
+    public var selectedSegmentID: UUID? {
+        get { selectedSegmentIDs.first }
+        set {
+            if let newID = newValue {
+                selectedSegmentIDs = [newID]
+            } else {
+                selectedSegmentIDs.removeAll()
+            }
+        }
+    }
     public var selectedTrackType: TimelineTrackType? = nil
     public var isVideoTrackHidden: Bool = false
     public var isZoomTrackHidden: Bool = false
@@ -133,11 +145,28 @@ public final class AppState: @unchecked Sendable {
     public var positionOffsetY: CGFloat = 0.0
     public var defaultZoomScale: CGFloat = 1.0 // 1X default
     
-    public func selectKeyframe(id: UUID) {
+    public func selectKeyframe(id: UUID, isAdd: Bool = false, isRange: Bool = false, seekTime: Double? = nil) {
         guard let kf = zoomKeyframes.first(where: { $0.id == id }) else { return }
-        selectedKeyframeID = id
-        selectedSegmentID = nil
+        selectedSegmentIDs.removeAll()
         selectedTrackType = nil
+        
+        if isRange, let lastID = selectedKeyframeIDs.first, let lastKf = zoomKeyframes.first(where: { $0.id == lastID }) {
+            let minTime = min(lastKf.startTime, kf.startTime)
+            let maxTime = max(lastKf.startTime + lastKf.duration, kf.startTime + kf.duration)
+            let inRange = zoomKeyframes.filter { $0.startTime >= (minTime - 0.01) && ($0.startTime + $0.duration) <= (maxTime + 0.01) }
+            for item in inRange {
+                selectedKeyframeIDs.insert(item.id)
+            }
+        } else if isAdd {
+            if selectedKeyframeIDs.contains(id) {
+                selectedKeyframeIDs.remove(id)
+            } else {
+                selectedKeyframeIDs.insert(id)
+            }
+        } else {
+            selectedKeyframeIDs = [id]
+        }
+        
         selectedEffectType = kf.effectType
         selectedTiltPreset = kf.tiltPreset
         customPitch = kf.customPitch
@@ -146,10 +175,33 @@ public final class AppState: @unchecked Sendable {
         positionOffsetX = kf.positionOffsetX
         positionOffsetY = kf.positionOffsetY
         defaultZoomScale = kf.scale
-        let seekTime = kf.startTime + min(0.6, kf.duration / 2.0)
-        self.currentTime = seekTime
-        self.avPlayer?.seek(to: CMTime(seconds: seekTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        
+        // Seek playhead: if custom seekTime is provided, use it;
+        // otherwise only seek if playhead is outside the keyframe's boundary to avoid displacing paused frame
+        if let targetSeek = seekTime {
+            self.currentTime = targetSeek
+            self.avPlayer?.seek(to: CMTime(seconds: targetSeek, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        } else if !(currentTime >= kf.startTime && currentTime <= (kf.startTime + kf.duration)) {
+            let defaultSeek = kf.startTime + min(0.6, kf.duration / 2.0)
+            self.currentTime = defaultSeek
+            self.avPlayer?.seek(to: CMTime(seconds: defaultSeek, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
         evaluateCurrentZoom()
+    }
+    
+    public func selectMultipleKeyframes(ids: Set<UUID>, isAdd: Bool = false) {
+        selectedSegmentIDs.removeAll()
+        selectedTrackType = nil
+        if isAdd {
+            selectedKeyframeIDs.formUnion(ids)
+        } else {
+            selectedKeyframeIDs = ids
+        }
+        if let firstID = selectedKeyframeIDs.first, let kf = zoomKeyframes.first(where: { $0.id == firstID }) {
+            selectedEffectType = kf.effectType
+            selectedTiltPreset = kf.tiltPreset
+            defaultZoomScale = kf.scale
+        }
     }
     
     /// Returns the index of the actively selected zoom keyframe, if any (Pure read-only)
@@ -387,7 +439,16 @@ public final class AppState: @unchecked Sendable {
     public var audioVolume: Double = 1.0
     public var timelineZoomScale: Double = 1.0
     public var isScrubbing: Bool = false
-    public var selectedKeyframeID: UUID? = nil
+    public var selectedKeyframeID: UUID? {
+        get { selectedKeyframeIDs.first }
+        set {
+            if let newID = newValue {
+                selectedKeyframeIDs = [newID]
+            } else {
+                selectedKeyframeIDs.removeAll()
+            }
+        }
+    }
     
     // Export Pipeline
     public var isExporting: Bool = false
@@ -1278,10 +1339,39 @@ public final class AppState: @unchecked Sendable {
         syncPlaybackToCurrentTime(accurate: true)
     }
     
-    public func selectSegment(id: UUID, trackType: TimelineTrackType) {
-        self.selectedSegmentID = id
-        self.selectedTrackType = trackType
-        self.selectedKeyframeID = nil
+    public func selectSegment(id: UUID, trackType: TimelineTrackType, isAdd: Bool = false, isRange: Bool = false) {
+        selectedKeyframeIDs.removeAll()
+        selectedTrackType = trackType
+        
+        let pool = (trackType == .video ? videoSegments : audioSegments)
+        guard let seg = pool.first(where: { $0.id == id }) else { return }
+        
+        if isRange, let lastID = selectedSegmentIDs.first, let lastSeg = pool.first(where: { $0.id == lastID }) {
+            let minTime = min(lastSeg.timelineStartTime, seg.timelineStartTime)
+            let maxTime = max(lastSeg.timelineEndTime, seg.timelineEndTime)
+            let inRange = pool.filter { $0.timelineStartTime >= (minTime - 0.01) && $0.timelineEndTime <= (maxTime + 0.01) }
+            for item in inRange {
+                selectedSegmentIDs.insert(item.id)
+            }
+        } else if isAdd {
+            if selectedSegmentIDs.contains(id) {
+                selectedSegmentIDs.remove(id)
+            } else {
+                selectedSegmentIDs.insert(id)
+            }
+        } else {
+            selectedSegmentIDs = [id]
+        }
+    }
+    
+    public func selectMultipleSegments(ids: Set<UUID>, trackType: TimelineTrackType, isAdd: Bool = false) {
+        selectedKeyframeIDs.removeAll()
+        selectedTrackType = trackType
+        if isAdd {
+            selectedSegmentIDs.formUnion(ids)
+        } else {
+            selectedSegmentIDs = ids
+        }
     }
     
     // MARK: - Undo / Redo History Engine
@@ -1311,7 +1401,9 @@ public final class AppState: @unchecked Sendable {
             shadow: self.shadow,
             playbackSpeed: self.playbackSpeed,
             is3DZoomEnabled: self.is3DZoomEnabled,
-            tiltIntensity: self.tiltIntensity
+            tiltIntensity: self.tiltIntensity,
+            selectedSegmentIDs: self.selectedSegmentIDs,
+            selectedKeyframeIDs: self.selectedKeyframeIDs
         )
     }
     
@@ -1345,9 +1437,9 @@ public final class AppState: @unchecked Sendable {
         self.videoSegments = s.videoSegments
         self.audioSegments = s.audioSegments
         self.zoomKeyframes = s.zoomKeyframes
-        self.selectedSegmentID = s.selectedSegmentID
+        self.selectedSegmentIDs = s.selectedSegmentIDs ?? (s.selectedSegmentID.map { [$0] } ?? [])
+        self.selectedKeyframeIDs = s.selectedKeyframeIDs ?? (s.selectedKeyframeID.map { [$0] } ?? [])
         self.selectedTrackType = s.selectedTrackType
-        self.selectedKeyframeID = s.selectedKeyframeID
         self.isVideoTrackHidden = s.isVideoTrackHidden
         self.isZoomTrackHidden = s.isZoomTrackHidden
         self.isAudioMuted = s.isAudioMuted
@@ -1372,30 +1464,36 @@ public final class AppState: @unchecked Sendable {
     }
     
     public func clearSelection() {
-        self.selectedSegmentID = nil
+        self.selectedSegmentIDs.removeAll()
         self.selectedTrackType = nil
-        self.selectedKeyframeID = nil
+        self.selectedKeyframeIDs.removeAll()
     }
     
     public func deleteSelected() {
         recordUndoState()
-        if let segID = selectedSegmentID, let type = selectedTrackType {
+        var didChange = false
+        if !selectedKeyframeIDs.isEmpty {
+            zoomKeyframes.removeAll { selectedKeyframeIDs.contains($0.id) }
+            selectedKeyframeIDs.removeAll()
+            didChange = true
+        }
+        if !selectedSegmentIDs.isEmpty, let type = selectedTrackType {
             switch type {
             case .video:
-                videoSegments.removeAll { $0.id == segID }
+                videoSegments.removeAll { selectedSegmentIDs.contains($0.id) }
             case .audio:
-                audioSegments.removeAll { $0.id == segID }
+                audioSegments.removeAll { selectedSegmentIDs.contains($0.id) }
             case .zoom:
-                zoomKeyframes.removeAll { $0.id == segID }
+                zoomKeyframes.removeAll { selectedSegmentIDs.contains($0.id) }
             }
-            selectedSegmentID = nil
+            selectedSegmentIDs.removeAll()
             selectedTrackType = nil
-        } else if let kfID = selectedKeyframeID {
-            zoomKeyframes.removeAll { $0.id == kfID }
-            selectedKeyframeID = nil
+            didChange = true
         }
-        evaluateCurrentZoom()
-        syncPlaybackToCurrentTime(accurate: true)
+        if didChange {
+            evaluateCurrentZoom()
+            syncPlaybackToCurrentTime(accurate: true)
+        }
     }
     
     public func deleteVideoSegment(id: UUID) {
@@ -1946,42 +2044,17 @@ public final class AppState: @unchecked Sendable {
             return
         }
         
-        if isPlaying || isScrubbing {
-            // Dynamic playback & scrubbing evaluation
-            let viewport = autoZoomEngine.evaluateViewport(at: currentTime, with: zoomKeyframes, telemetry: telemetryEvents)
-            self.currentZoomScale = viewport.scale
-            self.currentFocusPoint = viewport.focusPoint
-            self.currentPitch = viewport.pitch * tiltIntensity
-            self.currentYaw = viewport.yaw * tiltIntensity
-            self.currentRoll = viewport.roll * tiltIntensity
-            self.currentPositionX = viewport.positionOffsetX
-            self.currentPositionY = viewport.positionOffsetY
-        } else if let idx = selectedKeyframeIndex(),
-                   currentTime >= (zoomKeyframes[idx].startTime - 0.05) &&
-                   currentTime <= (zoomKeyframes[idx].startTime + zoomKeyframes[idx].duration + 0.05) {
-            // Paused with playhead INSIDE the selected keyframe: reflect that keyframe's live values & 3D angles immediately
-            let kf = zoomKeyframes[idx]
-            let is3D = kf.effectType == .motion3D
-            let angles = is3D ? kf.resolvedAngles : (pitch: 0.0, yaw: 0.0, roll: 0.0)
-            self.currentZoomScale = kf.scale
-            self.currentFocusPoint = kf.focusPoint
-            self.currentPitch = angles.pitch * tiltIntensity
-            self.currentYaw = angles.yaw * tiltIntensity
-            self.currentRoll = angles.roll * tiltIntensity
-            self.currentPositionX = kf.positionOffsetX
-            self.currentPositionY = kf.positionOffsetY
-            self.currentIs3D = is3D
-        } else {
-            let viewport = autoZoomEngine.evaluateViewport(at: currentTime, with: zoomKeyframes, telemetry: telemetryEvents)
-            self.currentZoomScale = viewport.scale
-            self.currentFocusPoint = viewport.focusPoint
-            self.currentPitch = viewport.pitch * tiltIntensity
-            self.currentYaw = viewport.yaw * tiltIntensity
-            self.currentRoll = viewport.roll * tiltIntensity
-            self.currentPositionX = viewport.positionOffsetX
-            self.currentPositionY = viewport.positionOffsetY
-            self.currentIs3D = viewport.is3D
-        }
+        // Single Unified Engine Truth: evaluateViewport calculates scale, smooth camera focus (telemetry radar tracking),
+        // 3D tilt angles, and pan offsets identically across dynamic playback, scrubbing, paused inspection, and sidebar adjustments.
+        let viewport = autoZoomEngine.evaluateViewport(at: currentTime, with: zoomKeyframes, telemetry: telemetryEvents)
+        self.currentZoomScale = viewport.scale
+        self.currentFocusPoint = viewport.focusPoint
+        self.currentPitch = viewport.pitch * tiltIntensity
+        self.currentYaw = viewport.yaw * tiltIntensity
+        self.currentRoll = viewport.roll * tiltIntensity
+        self.currentPositionX = viewport.positionOffsetX
+        self.currentPositionY = viewport.positionOffsetY
+        self.currentIs3D = viewport.is3D
     }
 }
 
@@ -2006,5 +2079,7 @@ public struct EditorHistorySnapshot: Equatable {
     public var playbackSpeed: Double
     public var is3DZoomEnabled: Bool
     public var tiltIntensity: Double
+    public var selectedSegmentIDs: Set<UUID>? = nil
+    public var selectedKeyframeIDs: Set<UUID>? = nil
 }
 

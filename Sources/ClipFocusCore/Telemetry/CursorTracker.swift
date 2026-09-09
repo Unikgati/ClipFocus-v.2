@@ -17,6 +17,7 @@ public final class CursorTracker: @unchecked Sendable {
     private var globalMonitors: [Any] = []
     private var pollingTimer: Timer?
     private var lastSampledPosition: CGPoint?
+    private var lastRecordedTimestamp: TimeInterval = 0.0
     public weak var delegate: CursorTrackerDelegate?
     
     public private(set) var recordedEvents: [TelemetryEvent] = []
@@ -99,15 +100,16 @@ public final class CursorTracker: @unchecked Sendable {
         let normalizedY = max(0.0, min(1.0, (frame.origin.y + frame.height - screenPoint.y) / frame.height))
         let position = CGPoint(x: normalizedX, y: normalizedY)
         
-        // Deduplicate micro jitter if stationary
+        // Deduplicate micro jitter if stationary, but emit a stationary anchor event every 0.10s
         if let last = lastSampledPosition {
             let dx = abs(last.x - position.x)
             let dy = abs(last.y - position.y)
-            if dx < 0.001 && dy < 0.001 {
+            if dx < 0.001 && dy < 0.001 && (timestamp - lastRecordedTimestamp) < 0.10 {
                 return
             }
         }
         self.lastSampledPosition = position
+        self.lastRecordedTimestamp = timestamp
         
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,

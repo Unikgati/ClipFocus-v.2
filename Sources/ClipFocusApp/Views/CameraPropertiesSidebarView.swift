@@ -81,10 +81,44 @@ public struct CameraPropertiesSidebarView: View {
     private func activeKeyframeContent(idx: Int) -> some View {
         let kf = appState.zoomKeyframes[idx]
         
-        // 1. Header Title
-        Text("Zoom & 3D Settings")
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(.white)
+        // 1. Header Title & Multi-Selection Banner
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Zoom & 3D Settings")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+            
+            if appState.selectedKeyframeIDs.count > 1 {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.on.square.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.cyan)
+                    Text("\(appState.selectedKeyframeIDs.count) Blocks Selected")
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Button(action: {
+                        appState.deleteSelected()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10))
+                            Text("Delete")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.red.opacity(0.9))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
         
         // 2. Zoom Effect Mode: [ 2D Zoom ]  [ 3D Motion ]
         VStack(alignment: .leading, spacing: 6) {
@@ -98,8 +132,17 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "viewfinder",
                     isSelected: kf.effectType == .zoom2D
                 ) {
-                    appState.zoomKeyframes[idx].effectType = .zoom2D
-                    appState.zoomKeyframes[idx].tiltPreset = .flat
+                    if appState.selectedKeyframeIDs.count > 1 {
+                        for i in 0..<appState.zoomKeyframes.count {
+                            if appState.selectedKeyframeIDs.contains(appState.zoomKeyframes[i].id) {
+                                appState.zoomKeyframes[i].effectType = .zoom2D
+                                appState.zoomKeyframes[i].tiltPreset = .flat
+                            }
+                        }
+                    } else {
+                        appState.zoomKeyframes[idx].effectType = .zoom2D
+                        appState.zoomKeyframes[idx].tiltPreset = .flat
+                    }
                     appState.selectedEffectType = .zoom2D
                     appState.selectedTiltPreset = .flat
                     appState.evaluateCurrentZoom()
@@ -110,9 +153,20 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "cube.fill",
                     isSelected: kf.effectType == .motion3D
                 ) {
-                    appState.zoomKeyframes[idx].effectType = .motion3D
-                    if appState.zoomKeyframes[idx].tiltPreset == .flat {
-                        appState.zoomKeyframes[idx].tiltPreset = .auto
+                    if appState.selectedKeyframeIDs.count > 1 {
+                        for i in 0..<appState.zoomKeyframes.count {
+                            if appState.selectedKeyframeIDs.contains(appState.zoomKeyframes[i].id) {
+                                appState.zoomKeyframes[i].effectType = .motion3D
+                                if appState.zoomKeyframes[i].tiltPreset == .flat {
+                                    appState.zoomKeyframes[i].tiltPreset = .auto
+                                }
+                            }
+                        }
+                    } else {
+                        appState.zoomKeyframes[idx].effectType = .motion3D
+                        if appState.zoomKeyframes[idx].tiltPreset == .flat {
+                            appState.zoomKeyframes[idx].tiltPreset = .auto
+                        }
                     }
                     appState.selectedEffectType = .motion3D
                     appState.evaluateCurrentZoom()
