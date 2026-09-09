@@ -220,22 +220,17 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             // Start writer to transition to writing state
             writer.startWriting()
             
-            // Setup Microphone Audio Capture if requested
-            if config.captureMicrophoneAudio {
+            // Setup Microphone Audio Capture if explicitly requested and target name is not None
+            if config.captureMicrophoneAudio, let micName = config.targetMicrophoneName, !micName.isEmpty, micName != "None" {
                 let micSession = AVCaptureSession()
                 micSession.beginConfiguration()
                 
-                let micDevice: AVCaptureDevice?
-                if let micName = config.targetMicrophoneName, !micName.isEmpty, micName != "None" {
-                    let discovery = AVCaptureDevice.DiscoverySession(
-                        deviceTypes: [.microphone, .external],
-                        mediaType: .audio,
-                        position: .unspecified
-                    )
-                    micDevice = discovery.devices.first(where: { $0.localizedName == micName }) ?? AVCaptureDevice.default(for: .audio)
-                } else {
-                    micDevice = AVCaptureDevice.default(for: .audio)
-                }
+                let discovery = AVCaptureDevice.DiscoverySession(
+                    deviceTypes: [.microphone, .external],
+                    mediaType: .audio,
+                    position: .unspecified
+                )
+                let micDevice = discovery.devices.first(where: { $0.localizedName == micName }) ?? AVCaptureDevice.default(for: .audio)
                 
                 if let device = micDevice, let input = try? AVCaptureDeviceInput(device: device), micSession.canAddInput(input) {
                     micSession.addInput(input)

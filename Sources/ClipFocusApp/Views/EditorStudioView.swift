@@ -46,6 +46,7 @@ public struct EditorStudioView: View {
                 HStack(spacing: 0) {
                     // Far Left Dock (Navigation Tabs)
                     dockView
+                        .zIndex(101)
                     
                     Divider().overlay(Color.white.opacity(0.06))
                     
@@ -53,7 +54,7 @@ public struct EditorStudioView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
                             if activeSidebarTab == "camera" {
-                                cameraPropertiesSection
+                                CameraPropertiesSidebarView(appState: appState)
                             } else {
                                 canvasPropertiesSection
                             }
@@ -62,6 +63,8 @@ public struct EditorStudioView: View {
                     }
                     .frame(width: 250)
                     .background(Color(red: 0.10, green: 0.11, blue: 0.15))
+                    .contentShape(Rectangle())
+                    .zIndex(100)
                     
                     Divider().overlay(Color.white.opacity(0.06))
                     
@@ -70,6 +73,8 @@ public struct EditorStudioView: View {
                         // Main Stage / Artboard (Fills all available height)
                         stageView
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .allowsHitTesting(false)
                         
                         // Resizable Timeline Splitter Handle
                         timelineSplitterView
@@ -242,310 +247,6 @@ public struct EditorStudioView: View {
         }
     }
     
-    // MARK: - Sidebar: Camera / Zoom Properties
-    @ViewBuilder
-    private var cameraPropertiesSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Header
-            Text("Zoom & 3D Settings")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
-            
-            // Zoom Effect: [ 2D Zoom ]  [ 3D Motion ]
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Zoom Effect")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                
-                HStack(spacing: 6) {
-                    Button(action: {
-                        appState.activeEffectType = .zoom2D
-                    }) {
-                        Text("2D Zoom")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(appState.activeEffectType == .zoom2D ? Color.blue : Color.white.opacity(0.08))
-                            .foregroundStyle(appState.activeEffectType == .zoom2D ? .white : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .contentShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    
-                    Button(action: {
-                        appState.activeEffectType = .motion3D
-                    }) {
-                        Text("3D Motion")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(appState.activeEffectType == .motion3D ? Color.blue : Color.white.opacity(0.08))
-                            .foregroundStyle(appState.activeEffectType == .motion3D ? .white : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .contentShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            
-            // Zoom Level Slider (1.0x to 4.0x) with Reset button!
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Zoom Level")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Button("Reset") {
-                        appState.activeZoomScale = 1.0
-                    }
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.blue)
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                    
-                    Text(appState.activeZoomScale <= 1.05 ? "1X" : String(format: "%.1fX", appState.activeZoomScale))
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
-                }
-                
-                Slider(
-                    value: Binding(
-                        get: { appState.activeZoomScale },
-                        set: { appState.activeZoomScale = $0 }
-                    ),
-                    in: 1.0...4.0,
-                    step: 0.1
-                )
-                .tint(.blue)
-            }
-            
-            // Apply to all 3D Motions button
-            Button(action: {
-                appState.applyToAll3DMotions()
-            }) {
-                Text("Apply to all 3D Motions")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.08))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .contentShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
-            
-            Divider().overlay(Color.white.opacity(0.08))
-            
-            // 3D Tilt Mode (FocuSee Advanced 3D System)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("3D Tilt")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    if appState.activeTiltPreset == .auto {
-                        Text("Auto Dynamic")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.cyan)
-                    } else if appState.activeTiltPreset == .custom {
-                        Text("Manual Angles")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.blue)
-                    } else {
-                        Text("Flat")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                
-                // 3-Mode Selector: Flat / Auto / Custom
-                HStack(spacing: 6) {
-                    tiltModeButton(preset: .flat, title: "Flat", icon: "square")
-                    tiltModeButton(preset: .auto, title: "Auto 3D", icon: "wand.and.stars")
-                    tiltModeButton(preset: .custom, title: "Custom", icon: "slider.horizontal.3")
-                }
-                
-                if appState.activeTiltPreset == .auto {
-                    HStack(spacing: 5) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.cyan)
-                        Text("Card tilts dynamically following focus & zoom direction.")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 2)
-                }
-            }
-            
-            // Custom 3D Rotation Sliders (visible when Custom mode is selected)
-            if appState.activeTiltPreset == .custom {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("3D Rotation Angles")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                    
-                    // Pitch (X-Axis)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Pitch (X-Axis)")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Reset") {
-                                appState.activeCustomPitch = 0
-                            }
-                            .font(.system(size: 10))
-                            .foregroundStyle(.blue)
-                            .buttonStyle(.plain)
-                            .contentShape(Rectangle())
-                            
-                            Text(String(format: "%.1f°", appState.activeCustomPitch))
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(.white)
-                        }
-                        Slider(
-                            value: Binding(
-                                get: { appState.activeCustomPitch },
-                                set: { appState.activeCustomPitch = $0 }
-                            ),
-                            in: -45...45
-                        )
-                        .tint(.blue)
-                    }
-                    
-                    // Yaw (Y-Axis)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Yaw (Y-Axis)")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Reset") {
-                                appState.activeCustomYaw = 0
-                            }
-                            .font(.system(size: 10))
-                            .foregroundStyle(.blue)
-                            .buttonStyle(.plain)
-                            .contentShape(Rectangle())
-                            
-                            Text(String(format: "%.1f°", appState.activeCustomYaw))
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(.white)
-                        }
-                        Slider(
-                            value: Binding(
-                                get: { appState.activeCustomYaw },
-                                set: { appState.activeCustomYaw = $0 }
-                            ),
-                            in: -45...45
-                        )
-                        .tint(.blue)
-                    }
-                    
-                    // Roll (Z-Axis)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Roll (Z-Axis)")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Reset") {
-                                appState.activeCustomRoll = 0
-                            }
-                            .font(.system(size: 10))
-                            .foregroundStyle(.blue)
-                            .buttonStyle(.plain)
-                            .contentShape(Rectangle())
-                            
-                            Text(String(format: "%.1f°", appState.activeCustomRoll))
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(.white)
-                        }
-                        Slider(
-                            value: Binding(
-                                get: { appState.activeCustomRoll },
-                                set: { appState.activeCustomRoll = $0 }
-                            ),
-                            in: -30...30
-                        )
-                        .tint(.blue)
-                    }
-                }
-            }
-            
-            // Position Section
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Position")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.white)
-                
-                // X-Axis
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text("X-Axis")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Reset") {
-                            appState.activePositionX = 0
-                        }
-                        .font(.system(size: 10))
-                        .foregroundStyle(.blue)
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        
-                        Text("\(Int(appState.activePositionX))")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(.white)
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { appState.activePositionX },
-                            set: { appState.activePositionX = $0 }
-                        ),
-                        in: -100...100
-                    )
-                    .tint(.blue)
-                }
-                
-                // Y-Axis
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text("Y-Axis")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Reset") {
-                            appState.activePositionY = 0
-                        }
-                        .font(.system(size: 10))
-                        .foregroundStyle(.blue)
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        
-                        Text("\(Int(appState.activePositionY))")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(.white)
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { appState.activePositionY },
-                            set: { appState.activePositionY = $0 }
-                        ),
-                        in: -100...100
-                    )
-                    .tint(.blue)
-                }
-            }
-        }
-    }
-    
     @ViewBuilder
     private func aspectRatioButton(_ ratio: String) -> some View {
         let isSelected = appState.canvasRatio == ratio
@@ -569,36 +270,7 @@ public struct EditorStudioView: View {
                     .fill(isSelected ? Color.blue : Color.white.opacity(0.08))
             )
             .foregroundStyle(isSelected ? .white : .secondary)
-            .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-    }
-    
-    @ViewBuilder
-    private func tiltModeButton(preset: TiltPreset, title: String, icon: String) -> some View {
-        let isSelected = appState.activeTiltPreset == preset
-        Button(action: {
-            appState.activeTiltPreset = preset
-            appState.evaluateCurrentZoom()
-        }) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .medium))
-                Text(title)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-            }
-            .foregroundStyle(isSelected ? .white : .secondary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? (preset == .auto ? Color.cyan.opacity(0.3) : Color.blue.opacity(0.28)) : Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isSelected ? (preset == .auto ? Color.cyan : Color.blue) : Color.white.opacity(0.12), lineWidth: isSelected ? 1.5 : 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -650,7 +322,7 @@ public struct EditorStudioView: View {
                     .frame(width: 38, height: 38)
                     .background(activeSidebarTab == "canvas" ? Color.white.opacity(0.12) : Color.clear)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Canvas & Styling")
@@ -663,23 +335,11 @@ public struct EditorStudioView: View {
                     .frame(width: 38, height: 38)
                     .background(activeSidebarTab == "camera" ? Color.white.opacity(0.12) : Color.clear)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Zoom & 3D Camera")
-            
-            // Dock Tab 3: Cursor
-            Button(action: { activeSidebarTab = "cursor" }) {
-                Image(systemName: "cursorarrow.rays")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(activeSidebarTab == "cursor" ? .white : .secondary)
-                    .frame(width: 38, height: 38)
-                    .background(activeSidebarTab == "cursor" ? Color.white.opacity(0.12) : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-            .help("Cursor Settings")
+
             
             Spacer()
             
@@ -787,6 +447,8 @@ public struct EditorStudioView: View {
                 }
                 .frame(width: artboardSize.width, height: artboardSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipped()
+                .allowsHitTesting(false)
                 .shadow(color: Color.black.opacity(0.45), radius: 18)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: appState.canvasRatio)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: appState.videoAspectRatio)
@@ -2004,38 +1666,34 @@ struct KeyframeTimelineItemView: View {
                         NSCursor.openHand.set()
                     }
                 }
-                .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .named("TimelineTrackContainer"))
+                .onTapGesture {
+                    activeSidebarTab = "camera"
+                    appState.selectKeyframe(id: currentKf.id)
+                }
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 3, coordinateSpace: .named("TimelineTrackContainer"))
                         .onChanged { value in
                             if appState.selectedKeyframeID != currentKf.id {
                                 activeSidebarTab = "camera"
                                 appState.selectKeyframe(id: currentKf.id)
                             }
                             let deltaX = value.location.x - value.startLocation.x
-                            if abs(deltaX) > 2 {
-                                appState.isScrubbing = true
-                                if dragStart_StartSec == nil {
-                                    appState.recordUndoState()
-                                    dragStart_StartSec = currentKf.startTime
-                                }
-                                if let initStart = dragStart_StartSec {
-                                    let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                    let newStart = max(0, min(max(0, totalDur - currentKf.duration), initStart + deltaSec))
-                                    appState.updateKeyframeStartTime(id: currentKf.id, newStartTime: newStart)
-                                    appState.seek(to: newStart, accurate: false)
-                                }
+                            appState.isScrubbing = true
+                            if dragStart_StartSec == nil {
+                                appState.recordUndoState()
+                                dragStart_StartSec = currentKf.startTime
+                            }
+                            if let initStart = dragStart_StartSec {
+                                let deltaSec = Double(deltaX / trackWidth) * totalDur
+                                let newStart = max(0, min(max(0, totalDur - currentKf.duration), initStart + deltaSec))
+                                appState.updateKeyframeStartTime(id: currentKf.id, newStartTime: newStart)
+                                appState.seek(to: newStart, accurate: false)
                             }
                         }
                         .onEnded { value in
-                            let deltaX = value.location.x - value.startLocation.x
-                            if abs(deltaX) > 2 {
-                                appState.isScrubbing = false
-                                dragStart_StartSec = nil
-                                appState.finalizeKeyframeEdits()
-                            } else {
-                                activeSidebarTab = "camera"
-                                appState.selectKeyframe(id: currentKf.id)
-                            }
+                            appState.isScrubbing = false
+                            dragStart_StartSec = nil
+                            appState.finalizeKeyframeEdits()
                         }
                 )
                 

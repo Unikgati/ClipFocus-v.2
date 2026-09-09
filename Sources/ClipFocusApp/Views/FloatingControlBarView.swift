@@ -107,60 +107,8 @@ public struct FloatingControlBarView: View {
             }
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
-            
-            // 3. Camera Permission / Selector button
-            if !appState.hasCameraPermission {
-                Button(action: {
-                    appState.showPermissionsWindow = true
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "video.slash")
-                            .font(.system(size: 12))
-                        Text("Enable the per...")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .foregroundStyle(Color(white: 0.85))
-                    .padding(.horizontal, 9)
-                    .frame(height: 28)
-                    .background(Color(red: 0.14, green: 0.16, blue: 0.22))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            } else {
-                Menu {
-                    ForEach(appState.availableCameras, id: \.self) { cam in
-                        Button(action: { appState.selectedCamera = cam }) {
-                            if appState.selectedCamera == cam {
-                                Label(cam, systemImage: "checkmark")
-                            } else {
-                                Text(cam)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: appState.selectedCamera == "None" ? "video.slash" : "video")
-                            .font(.system(size: 12))
-                        Text(appState.selectedCamera)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 7, weight: .bold))
-                    }
-                    .foregroundStyle(Color(white: 0.85))
-                    .padding(.horizontal, 8)
-                    .frame(height: 28)
-                    .background(Color(red: 0.14, green: 0.16, blue: 0.22))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-            }
-            
-            // 4. Microphone Menu / Permission
+
+            // 3. Microphone Menu / Permission
             if !appState.hasMicPermission {
                 Button(action: {
                     appState.requestMicrophonePermission()
@@ -286,16 +234,6 @@ public struct FloatingControlBarView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("macOS requires explicit permission for ClipFocus to capture your screen, windows, and mouse interactions.\n\nPlease enable ClipFocus in System Settings > Privacy & Security > Screen Recording.")
-        }
-        .alert("Camera Permission Required", isPresented: $appState.showCameraPermissionAlert) {
-            Button("Open System Settings") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("ClipFocus requires camera access to display webcam feeds.\n\nPlease enable ClipFocus in System Settings > Privacy & Security > Camera.")
         }
     }
 }

@@ -157,48 +157,7 @@ public struct LauncherModalView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color(white: 0.60))
                     
-                    // 1. Camera Row
-                    if !appState.hasCameraPermission {
-                        Button(action: {
-                            appState.showPermissionsWindow = true
-                        }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "video.slash")
-                                    .font(.system(size: 13))
-                                    .frame(width: 32, height: 32)
-                                    .background(Color(red: 0.13, green: 0.15, blue: 0.20))
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                    .foregroundStyle(Color(white: 0.50))
-                                
-                                HStack {
-                                    Text("Enable the permi...")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Color(white: 0.55))
-                                        .lineLimit(1)
-                                    
-                                    Spacer(minLength: 4)
-                                    
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 8, weight: .bold))
-                                        .foregroundStyle(Color(white: 0.40))
-                                }
-                                .padding(.horizontal, 10)
-                                .frame(height: 32)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(red: 0.13, green: 0.15, blue: 0.20))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        CustomDeviceDropdown(
-                            iconName: appState.selectedCamera == "None" ? "video.slash" : "video",
-                            options: appState.availableCameras,
-                            selection: $appState.selectedCamera
-                        )
-                    }
-                    
-                    // 2. Microphone Row (Custom Dropdown)
+                    // 1. Microphone Row (Custom Dropdown)
                     if !appState.hasMicPermission {
                         Button(action: {
                             appState.requestMicrophonePermission()
@@ -262,16 +221,6 @@ public struct LauncherModalView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("macOS requires explicit permission for ClipFocus to capture your screen, windows, and mouse interactions.\n\nPlease enable ClipFocus in System Settings > Privacy & Security > Screen Recording.")
-        }
-        .alert("Camera Permission Required", isPresented: $appState.showCameraPermissionAlert) {
-            Button("Open System Settings") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("ClipFocus requires camera access to display webcam feeds.\n\nPlease enable ClipFocus in System Settings > Privacy & Security > Camera.")
         }
     }
 }

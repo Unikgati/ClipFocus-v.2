@@ -9,7 +9,6 @@ public struct PermissionsModalView: View {
     public let onDismiss: () -> Void
     
     @State private var hasScreenAccess: Bool = false
-    @State private var hasCameraAccess: Bool = false
     @State private var hasMicAccess: Bool = false
     @State private var hasAccessibilityAccess: Bool = false
     
@@ -38,7 +37,7 @@ public struct PermissionsModalView: View {
             .padding(.top, 30)
             .padding(.bottom, 26)
             
-            // 4 Permission rows
+            // 3 Permission rows
             VStack(spacing: 16) {
                 // 1. Screen Access
                 permissionRow(
@@ -53,29 +52,7 @@ public struct PermissionsModalView: View {
                     }
                 )
                 
-                // 2. Camera Access
-                permissionRow(
-                    iconName: "display",
-                    title: "Allow ClipFocus to access your camera to record webcam and external device footage.",
-                    isEnabled: hasCameraAccess,
-                    onEnable: {
-                        let status = AVCaptureDevice.authorizationStatus(for: .video)
-                        if status == .notDetermined {
-                            AVCaptureDevice.requestAccess(for: .video) { granted in
-                                DispatchQueue.main.async {
-                                    hasCameraAccess = granted
-                                    checkAllPermissions()
-                                }
-                            }
-                        } else {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                    }
-                )
-                
-                // 3. Microphone Access
+                // 2. Microphone Access
                 permissionRow(
                     iconName: "mic.fill",
                     title: "Allow ClipFocus to access the microphone to record your voice",
@@ -131,7 +108,7 @@ public struct PermissionsModalView: View {
             .buttonStyle(.plain)
             .padding(.bottom, 22)
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 620, height: 410)
         .background(Color(red: 0.08, green: 0.09, blue: 0.12))
         .ignoresSafeArea()
         .onAppear {
@@ -204,7 +181,6 @@ public struct PermissionsModalView: View {
     
     private func checkAllPermissions() {
         hasScreenAccess = CGPreflightScreenCaptureAccess()
-        hasCameraAccess = (AVCaptureDevice.authorizationStatus(for: .video) == .authorized)
         hasMicAccess = (AVCaptureDevice.authorizationStatus(for: .audio) == .authorized)
         hasAccessibilityAccess = AXIsProcessTrusted()
         

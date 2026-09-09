@@ -26,6 +26,11 @@ public final class CinematicPlayerNSView: NSView {
         return true
     }
     
+    override public func hitTest(_ point: NSPoint) -> NSView? {
+        // Crucial: Return nil so the player layer never intercepts or blocks clicks on sidebar or controls
+        return nil
+    }
+    
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupLayers()

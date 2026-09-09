@@ -72,7 +72,12 @@ public final class AppState: @unchecked Sendable {
     public var showCameraPermissionAlert: Bool = false
     public var availableCameras: [String] = ["None"]
     
-    public var selectedMic: String = "None"
+    public var userConfiguredMic: Bool = false
+    public var selectedMic: String = "None" {
+        didSet {
+            userConfiguredMic = true
+        }
+    }
     public var hasMicPermission: Bool = false
     public var showMicPermissionAlert: Bool = false
     public var availableMics: [String] = ["None"]
@@ -411,8 +416,8 @@ public final class AppState: @unchecked Sendable {
     
     public func checkPermissions() {
         captureManager.checkPermissions()
-        let camStatus = AVCaptureDevice.authorizationStatus(for: .video)
-        hasCameraPermission = (camStatus == .authorized)
+        // Webcam recording is disabled for now - no camera permission checks needed
+        hasCameraPermission = true
         
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicPermission = (micStatus == .authorized)
@@ -429,29 +434,11 @@ public final class AppState: @unchecked Sendable {
     }
     
     private var hasInitializedAudioDevices = false
-    private var hasInitializedVideoDevices = false
     
     public func refreshHardwareDevices() {
-        // Video devices
-        let videoDiscovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .external],
-            mediaType: .video,
-            position: .unspecified
-        )
-        let camNames = videoDiscovery.devices.map(\.localizedName)
-        self.availableCameras = ["None"] + camNames
-        
-        if !hasInitializedVideoDevices {
-            if hasCameraPermission && !camNames.isEmpty {
-                selectedCamera = camNames[0]
-                hasInitializedVideoDevices = true
-            }
-        } else {
-            // Only fall back if the user's previously chosen physical camera is no longer connected
-            if selectedCamera != "None" && !availableCameras.contains(selectedCamera) {
-                selectedCamera = "None"
-            }
-        }
+        // Video devices discovery disabled for now
+        self.availableCameras = ["None"]
+        self.selectedCamera = "None"
         
         // Audio devices
         let audioDiscovery = AVCaptureDevice.DiscoverySession(
@@ -463,9 +450,9 @@ public final class AppState: @unchecked Sendable {
         self.availableMics = ["None"] + micNames
         
         if !hasInitializedAudioDevices {
-            if !micNames.isEmpty {
+            hasInitializedAudioDevices = true
+            if !userConfiguredMic && !micNames.isEmpty {
                 selectedMic = micNames[0]
-                hasInitializedAudioDevices = true
             }
         } else {
             // Only fall back if the user's previously chosen physical mic was unplugged/disconnected
@@ -476,24 +463,8 @@ public final class AppState: @unchecked Sendable {
     }
     
     public func requestCameraPermission() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        switch status {
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    self.hasCameraPermission = granted
-                    self.refreshHardwareDevices()
-                }
-            }
-        case .authorized:
-            self.hasCameraPermission = true
-            refreshHardwareDevices()
-        case .denied, .restricted:
-            self.hasCameraPermission = false
-            self.showCameraPermissionAlert = true
-        @unknown default:
-            break
-        }
+        // No-op while webcam recording is disabled
+        self.hasCameraPermission = true
     }
     
     public func requestMicrophonePermission() {
@@ -616,11 +587,14 @@ public final class AppState: @unchecked Sendable {
                 
                 let excluded = WindowManager.shared.allClipFocusWindowIDs()
                 
+                let isMicActive = (self.selectedMic != "None" && !self.selectedMic.isEmpty)
+                let isAudioActive = (self.selectedAudio != "None" && !self.selectedAudio.isEmpty)
+                
                 try await self.captureManager.startRecording(
                     mode: self.selectedMode?.rawValue ?? "Full Screen",
-                    captureMicrophoneAudio: self.selectedMic != "None",
-                    captureSystemAudio: self.selectedAudio != "None",
-                    targetMicrophoneName: self.selectedMic != "None" ? self.selectedMic : nil,
+                    captureMicrophoneAudio: isMicActive,
+                    captureSystemAudio: isAudioActive,
+                    targetMicrophoneName: isMicActive ? self.selectedMic : nil,
                     sourceRect: sourceRect,
                     targetWindowID: targetWindowID,
                     excludedWindowIDs: excluded
