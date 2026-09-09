@@ -43,7 +43,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let url = URL(fileURLWithPath: path)
             appState.loadRecordedVideo(url: url)
         }
+        setupMenuBar()
         WindowManager.shared.start(with: appState)
+    }
+    
+    private func setupMenuBar() {
+        let mainMenu = NSMenu()
+        
+        // App Menu
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About ClipFocus", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Quit ClipFocus", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+        
+        // File Menu
+        let fileMenuItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        let exportItem = NSMenuItem(title: "Export Video...", action: #selector(handleMenuExport), keyEquivalent: "e")
+        exportItem.target = self
+        fileMenu.addItem(exportItem)
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
+        
+        // Edit Menu
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        let undoItem = NSMenuItem(title: "Undo", action: #selector(handleMenuUndo), keyEquivalent: "z")
+        undoItem.target = self
+        editMenu.addItem(undoItem)
+        let redoItem = NSMenuItem(title: "Redo", action: #selector(handleMenuRedo), keyEquivalent: "Z")
+        redoItem.target = self
+        editMenu.addItem(redoItem)
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+        
+        NSApplication.shared.mainMenu = mainMenu
+    }
+    
+    @MainActor
+    @objc private func handleMenuExport() {
+        appState.exportVideo()
+    }
+    
+    @MainActor
+    @objc private func handleMenuUndo() {
+        appState.undo()
+    }
+    
+    @MainActor
+    @objc private func handleMenuRedo() {
+        appState.redo()
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -51,7 +103,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
-        NSLog("ClipFocusApp applicationWillTerminate called! Callstack:\n%@", Thread.callStackSymbols.joined(separator: "\n"))
+        if appState.hideDesktopIcons {
+            appState.hideDesktopIcons = false
+        }
+        NSLog("ClipFocusApp applicationWillTerminate called!")
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

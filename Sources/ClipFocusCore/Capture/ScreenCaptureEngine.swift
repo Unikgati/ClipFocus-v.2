@@ -57,13 +57,15 @@ public enum CaptureState: String, Sendable {
 public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutput, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     
     public private(set) var state: CaptureState = .idle
-    public var isPaused: Bool = false
+    public private(set) var isPaused: Bool = false
+    private var totalPausedCMTime: CMTime = .zero
     private var stream: SCStream?
     private var micCaptureSession: AVCaptureSession?
     private var micAudioOutput: AVCaptureAudioDataOutput?
     private var assetWriter: AVAssetWriter?
     private var videoWriterInput: AVAssetWriterInput?
-    private var audioWriterInput: AVAssetWriterInput?
+    private var systemAudioWriterInput: AVAssetWriterInput?
+    private var micAudioWriterInput: AVAssetWriterInput?
     private var outputFileURL: URL?
     private var sessionStartTime: CMTime?
     private var isSessionStarted: Bool = false
@@ -75,15 +77,63 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
         super.init()
     }
     
+    public func pauseCapture() {
+        processingQueue.async { [weak self] in
+            self?.isPaused = true
+        }
+    }
+    
+    public func resumeCapture(pausedDuration: TimeInterval) {
+        processingQueue.async { [weak self] in
+            guard let self = self else { return }
+            let durationCM = CMTime(seconds: pausedDuration, preferredTimescale: 600)
+            self.totalPausedCMTime = self.totalPausedCMTime + durationCM
+            self.isPaused = false
+        }
+    }
+    
+    private func adjustBufferTiming(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer {
+        guard totalPausedCMTime > .zero else { return sampleBuffer }
+        
+        let origPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard origPTS.isValid && !origPTS.isIndefinite else { return sampleBuffer }
+        let adjustedPTS = origPTS - totalPausedCMTime
+        
+        let origDTS = CMSampleBufferGetDecodeTimeStamp(sampleBuffer)
+        let adjustedDTS = (origDTS.isValid && !origDTS.isIndefinite) ? origDTS - totalPausedCMTime : .invalid
+        
+        var timing = CMSampleTimingInfo(
+            duration: CMSampleBufferGetDuration(sampleBuffer),
+            presentationTimeStamp: adjustedPTS,
+            decodeTimeStamp: adjustedDTS
+        )
+        
+        var copy: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &copy
+        )
+        if status == noErr, let validCopy = copy {
+            return validCopy
+        }
+        return sampleBuffer
+    }
+    
     private func cleanup() {
         self.state = .idle
+        self.isPaused = false
+        self.totalPausedCMTime = .zero
         self.stream = nil
         self.micCaptureSession?.stopRunning()
         self.micCaptureSession = nil
         self.micAudioOutput = nil
         self.assetWriter = nil
         self.videoWriterInput = nil
-        self.audioWriterInput = nil
+        self.systemAudioWriterInput = nil
+        self.micAudioWriterInput = nil
         self.sessionStartTime = nil
         self.isSessionStarted = false
         self.recordedFrameCount = 0
@@ -198,20 +248,30 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
                 writer.add(videoInput)
             }
             
-            let shouldCaptureAudio = config.captureSystemAudio || config.captureMicrophoneAudio
-            if shouldCaptureAudio {
-                let audioSettings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: 48000,
-                    AVNumberOfChannelsKey: 2,
-                    AVEncoderBitRateKey: 192000
-                ]
-                let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-                audioInput.expectsMediaDataInRealTime = true
-                if writer.canAdd(audioInput) {
-                    writer.add(audioInput)
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48000,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 192000
+            ]
+            
+            if config.captureSystemAudio {
+                let sysAudioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                sysAudioInput.expectsMediaDataInRealTime = true
+                if writer.canAdd(sysAudioInput) {
+                    writer.add(sysAudioInput)
+                    self.systemAudioWriterInput = sysAudioInput
                 }
-                self.audioWriterInput = audioInput
+            }
+            
+            let isMicActive = config.captureMicrophoneAudio && (config.targetMicrophoneName != nil && !config.targetMicrophoneName!.isEmpty && config.targetMicrophoneName != "None")
+            if isMicActive {
+                let micInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                micInput.expectsMediaDataInRealTime = true
+                if writer.canAdd(micInput) {
+                    writer.add(micInput)
+                    self.micAudioWriterInput = micInput
+                }
             }
             
             self.assetWriter = writer
@@ -327,7 +387,8 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
                 }
                 
                 self.videoWriterInput?.markAsFinished()
-                self.audioWriterInput?.markAsFinished()
+                self.systemAudioWriterInput?.markAsFinished()
+                self.micAudioWriterInput?.markAsFinished()
                 
                 writer.finishWriting {
                     let status = writer.status
@@ -386,9 +447,11 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
                 }
             }
             
+            let adjustedBuffer = adjustBufferTiming(sampleBuffer)
+            
             // 3. Always start the AVAssetWriter session with the first VALID video frame
             if !self.isSessionStarted {
-                let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                let pts = CMSampleBufferGetPresentationTimeStamp(adjustedBuffer)
                 guard pts.isValid && !pts.isIndefinite else { return }
                 writer.startSession(atSourceTime: pts)
                 self.sessionStartTime = pts
@@ -399,7 +462,7 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             guard self.isSessionStarted else { return }
             
             if let videoInput = videoWriterInput, videoInput.isReadyForMoreMediaData {
-                if videoInput.append(sampleBuffer) {
+                if videoInput.append(adjustedBuffer) {
                     recordedFrameCount += 1
                 } else {
                     NSLog("ScreenCaptureEngine: videoInput append failed! Writer status: %ld, error: %@",
@@ -409,10 +472,11 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             
         case .audio, .microphone:
             guard self.isSessionStarted, let startTime = self.sessionStartTime else { return }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let adjustedBuffer = adjustBufferTiming(sampleBuffer)
+            let pts = CMSampleBufferGetPresentationTimeStamp(adjustedBuffer)
             guard pts.isValid && !pts.isIndefinite && pts >= startTime else { return }
-            if let audioInput = audioWriterInput, audioInput.isReadyForMoreMediaData {
-                audioInput.append(sampleBuffer)
+            if let audioInput = systemAudioWriterInput, audioInput.isReadyForMoreMediaData {
+                audioInput.append(adjustedBuffer)
             }
             
         @unknown default:
@@ -427,11 +491,12 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
         guard let writer = assetWriter, writer.status == .writing else { return }
         guard self.isSessionStarted, let startTime = self.sessionStartTime else { return }
         
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let adjustedBuffer = adjustBufferTiming(sampleBuffer)
+        let pts = CMSampleBufferGetPresentationTimeStamp(adjustedBuffer)
         guard pts.isValid && !pts.isIndefinite && pts >= startTime else { return }
         
-        if let audioInput = audioWriterInput, audioInput.isReadyForMoreMediaData {
-            audioInput.append(sampleBuffer)
+        if let audioInput = micAudioWriterInput, audioInput.isReadyForMoreMediaData {
+            audioInput.append(adjustedBuffer)
         }
     }
 }

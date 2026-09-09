@@ -9,6 +9,8 @@ public struct FloatingRecordingPill: View {
     @State private var isRestartHovered: Bool = false
     @State private var isPauseHovered: Bool = false
     @State private var isStopHovered: Bool = false
+    @State private var showDiscardConfirm: Bool = false
+    @State private var showRestartConfirm: Bool = false
     
     public init(appState: AppState) {
         self.appState = appState
@@ -26,11 +28,91 @@ public struct FloatingRecordingPill: View {
                         .foregroundStyle(.white)
                 }
                 .padding(.horizontal, 16)
+            } else if showDiscardConfirm {
+                HStack(spacing: 10) {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.35))
+                    Text("Discard?")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    
+                    Spacer()
+                    
+                    Button("Cancel") {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showDiscardConfirm = false
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                    
+                    Button("Discard") {
+                        showDiscardConfirm = false
+                        appState.discardRecording()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.90, green: 0.25, blue: 0.25))
+                    .clipShape(Capsule())
+                }
+                .padding(.horizontal, 12)
+            } else if showRestartConfirm {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Restart?")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    
+                    Spacer()
+                    
+                    Button("Cancel") {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showRestartConfirm = false
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                    
+                    Button("Restart") {
+                        showRestartConfirm = false
+                        appState.restartRecording()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.46, green: 0.36, blue: 0.98))
+                    .clipShape(Capsule())
+                }
+                .padding(.horizontal, 12)
             } else {
                 HStack(spacing: 16) {
                     // 1. Trash Button (Discard current recording)
                     Button(action: {
-                        appState.discardRecording()
+                        if appState.captureManager.recordingDuration >= 3.0 {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showDiscardConfirm = true
+                            }
+                        } else {
+                            appState.discardRecording()
+                        }
                     }) {
                         Image(systemName: "trash")
                             .font(.system(size: 14, weight: .medium))
@@ -44,7 +126,13 @@ public struct FloatingRecordingPill: View {
                     
                     // 2. Restart Button (Restart from 00:00)
                     Button(action: {
-                        appState.restartRecording()
+                        if appState.captureManager.recordingDuration >= 3.0 {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showRestartConfirm = true
+                            }
+                        } else {
+                            appState.restartRecording()
+                        }
                     }) {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 14, weight: .medium))

@@ -260,6 +260,10 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     private var permissionsWindow: NSWindow?
     private var areaOverlayPanel: NSPanel?
     
+    public var currentEditorWindow: NSWindow? {
+        return editorWindow
+    }
+    
     // Window Mode Hover & Selection Tracking
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?

@@ -22,6 +22,7 @@ public final class CaptureManager: @unchecked Sendable {
     private var durationTimer: Timer?
     private var accumulatedDuration: TimeInterval = 0.0
     private var lastResumeTime: Date?
+    private var pauseDate: Date?
     
     public init() {
         checkPermissions()
@@ -113,6 +114,7 @@ public final class CaptureManager: @unchecked Sendable {
             self.accumulatedDuration = 0.0
             self.recordingDuration = 0.0
             self.lastResumeTime = Date()
+            self.pauseDate = nil
             self.lastErrorMessage = nil
             
             // Duration ticker
@@ -128,15 +130,20 @@ public final class CaptureManager: @unchecked Sendable {
         guard isRecording, !isPaused, let resume = lastResumeTime else { return }
         accumulatedDuration += Date().timeIntervalSince(resume)
         isPaused = true
-        captureEngine.isPaused = true
+        pauseDate = Date()
+        captureEngine.pauseCapture()
+        cursorTracker.pauseTracking()
     }
     
     /// Resume paused recording session
     public func resumeRecording() {
-        guard isRecording, isPaused else { return }
+        guard isRecording, isPaused, let pause = pauseDate else { return }
+        let pausedDuration = Date().timeIntervalSince(pause)
         lastResumeTime = Date()
+        pauseDate = nil
         isPaused = false
-        captureEngine.isPaused = false
+        captureEngine.resumeCapture(pausedDuration: pausedDuration)
+        cursorTracker.resumeTracking(pausedDuration: pausedDuration)
     }
     
     /// Discard current recording, delete output file, and reset
@@ -159,7 +166,10 @@ public final class CaptureManager: @unchecked Sendable {
     }
     
     /// Stop current recording, finalize movie, analyze telemetry, and construct project
-    public func stopRecording() async throws -> (URL, ClipFocusProject) {
+    public func stopRecording(
+        preferredEffectType: ZoomEffectType = .zoom2D,
+        autoZoomOnTyping: Bool = true
+    ) async throws -> (URL, ClipFocusProject) {
         durationTimer?.invalidate()
         durationTimer = nil
         
@@ -174,7 +184,12 @@ public final class CaptureManager: @unchecked Sendable {
         let finalDuration = max(1.0, recordingDuration)
         
         // Generate real auto-zoom keyframes from user clicks
-        let keyframes = autoZoomEngine.generateKeyframes(from: rawEvents, totalDuration: finalDuration)
+        let keyframes = autoZoomEngine.generateKeyframes(
+            from: rawEvents,
+            totalDuration: finalDuration,
+            preferredEffectType: preferredEffectType,
+            autoZoomOnTyping: autoZoomOnTyping
+        )
         
         // Save telemetry data
         let telemetryURL = finalVideoURL.deletingPathExtension().appendingPathExtension("json")

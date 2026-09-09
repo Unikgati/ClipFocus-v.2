@@ -29,6 +29,8 @@ public struct EditorStudioView: View {
     @State private var isHoveringSplitter: Bool = false
     @State private var dragStartTimelineHeight: CGFloat? = nil
     @State private var keyMonitor: Any? = nil
+    @State private var gestureMonitor: Any? = nil
+    @State private var isHoveringTimelineArea: Bool = false
     
     public init(appState: AppState) {
         self.appState = appState
@@ -92,6 +94,30 @@ public struct EditorStudioView: View {
             }
         }
         .ignoresSafeArea()
+        .alert("Export Error", isPresented: Binding(
+            get: { appState.errorMessage != nil },
+            set: { if !$0 { appState.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { appState.errorMessage = nil }
+        } message: {
+            Text(appState.errorMessage ?? "An error occurred.")
+        }
+        .alert("Export Successful", isPresented: Binding(
+            get: { appState.exportSuccessMessage != nil },
+            set: { if !$0 { appState.exportSuccessMessage = nil } }
+        )) {
+            Button("Show in Finder") {
+                if let url = appState.lastExportedURL {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                appState.exportSuccessMessage = nil
+            }
+            Button("OK", role: .cancel) {
+                appState.exportSuccessMessage = nil
+            }
+        } message: {
+            Text(appState.exportSuccessMessage ?? "Your video has been exported successfully!")
+        }
         .onAppear {
             if keyMonitor == nil {
                 keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -103,6 +129,11 @@ public struct EditorStudioView: View {
                     case 49: // Spacebar -> Play / Pause
                         appState.togglePlayback()
                         return nil
+                    case 14: // E key with Cmd (Cmd+E) -> Export Video
+                        if event.modifierFlags.contains(.command) {
+                            appState.exportVideo()
+                            return nil
+                        }
                     case 11: // B key with Cmd (Cmd+B) -> Razor Cut / Split at Playhead
                         if event.modifierFlags.contains(.command) {
                             appState.splitAtCurrentTime()
@@ -131,6 +162,27 @@ public struct EditorStudioView: View {
                     case 38: // J -> Shuttle Reverse (-1x, -2x, -4x, -8x)
                         appState.shuttleReverse()
                         return nil
+                    case 24: // = / + key with Cmd -> Zoom In Timeline
+                        if event.modifierFlags.contains(.command) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.timelineZoomScale = min(5.0, appState.timelineZoomScale + 0.5)
+                            }
+                            return nil
+                        }
+                    case 27: // - key with Cmd -> Zoom Out Timeline
+                        if event.modifierFlags.contains(.command) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.timelineZoomScale = max(1.0, appState.timelineZoomScale - 0.5)
+                            }
+                            return nil
+                        }
+                    case 29: // 0 key with Cmd -> Zoom to Fit
+                        if event.modifierFlags.contains(.command) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.timelineZoomScale = 1.0
+                            }
+                            return nil
+                        }
                     case 51, 117: // Delete / Backspace -> Delete Selected Block or Segment
                         appState.deleteSelected()
                         return nil
@@ -140,11 +192,47 @@ public struct EditorStudioView: View {
                     return event
                 }
             }
+            if gestureMonitor == nil {
+                gestureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.magnify, .scrollWheel]) { event in
+                    guard isHoveringTimelineArea else { return event }
+                    
+                    switch event.type {
+                    case .magnify:
+                        // Native trackpad pinch-to-zoom (Premiere Pro style)
+                        let delta = Double(event.magnification) * 4.0
+                        withAnimation(.interactiveSpring(response: 0.12, dampingFraction: 0.9)) {
+                            appState.timelineZoomScale = max(1.0, min(8.0, appState.timelineZoomScale + delta))
+                        }
+                        return nil
+                        
+                    case .scrollWheel:
+                        // Option + Scroll or Cmd + Scroll (Premiere Pro style)
+                        if event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command) {
+                            let dy = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY
+                            if abs(dy) > 0.05 {
+                                let delta = Double(dy) * 0.035
+                                withAnimation(.interactiveSpring(response: 0.12, dampingFraction: 0.9)) {
+                                    appState.timelineZoomScale = max(1.0, min(8.0, appState.timelineZoomScale + delta))
+                                }
+                                return nil
+                            }
+                        }
+                        return event
+                        
+                    default:
+                        return event
+                    }
+                }
+            }
         }
         .onDisappear {
             if let monitor = keyMonitor {
                 NSEvent.removeMonitor(monitor)
                 keyMonitor = nil
+            }
+            if let gMonitor = gestureMonitor {
+                NSEvent.removeMonitor(gMonitor)
+                gestureMonitor = nil
             }
         }
     }
@@ -290,23 +378,27 @@ public struct EditorStudioView: View {
                 
                 Spacer()
                 
-                Button(action: { appState.exportVideo() }) {
+                Button(action: {
+                    NSLog("[ClipFocus] User pressed Export button in titlebar")
+                    appState.exportVideo()
+                }) {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.up.forward.square.fill")
-                        Text("Export Video")
+                        Text("Export")
                     }
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4.5)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 5)
                     .background(Color.blue)
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
             }
-            .padding(.trailing, 14)
+            .padding(.trailing, 16)
         }
-        .frame(height: 32)
+        .frame(height: 40)
         .background(Color(red: 0.08, green: 0.09, blue: 0.12))
     }
     
@@ -687,8 +779,8 @@ public struct EditorStudioView: View {
                 
                 Spacer()
                 
-                // Playback Speed & Volume
-                HStack(spacing: 10) {
+                // Playback Speed & Timeline Zoom (Professional NLE Editor Controls)
+                HStack(spacing: 12) {
                     Menu {
                         ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { spd in
                             Button("\(String(format: "%.1f", spd))x") {
@@ -707,21 +799,54 @@ public struct EditorStudioView: View {
                     .menuStyle(.borderlessButton)
                     .frame(width: 48)
                     
-                    Button {
-                        appState.toggleAudioMute()
-                    } label: {
-                        Image(systemName: appState.isAudioMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(appState.isAudioMuted ? Color.red : Color.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Toggle Master Mute")
+                    Divider()
+                        .frame(height: 16)
+                        .overlay(Color.white.opacity(0.12))
                     
-                    Slider(value: $appState.audioVolume, in: 0...1) { _ in
-                        appState.setVolume(appState.audioVolume)
+                    // Professional Timeline Zoom In/Out Controls
+                    HStack(spacing: 6) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.timelineZoomScale = max(1.0, appState.timelineZoomScale - 0.5)
+                            }
+                        } label: {
+                            Image(systemName: "minus.magnifyingglass")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(appState.timelineZoomScale <= 1.01 ? Color.white.opacity(0.25) : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(appState.timelineZoomScale <= 1.01)
+                        .help("Zoom Out Timeline (⌘-)")
+                        
+                        Slider(value: $appState.timelineZoomScale, in: 1.0...8.0)
+                            .frame(width: 80)
+                            .tint(.blue)
+                        
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.timelineZoomScale = min(8.0, appState.timelineZoomScale + 0.5)
+                            }
+                        } label: {
+                            Image(systemName: "plus.magnifyingglass")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(appState.timelineZoomScale >= 7.99 ? Color.white.opacity(0.25) : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(appState.timelineZoomScale >= 7.99)
+                        .help("Zoom In Timeline (⌘+)")
+                        
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.timelineZoomScale = 1.0
+                            }
+                        } label: {
+                            Text("\(Int(round(appState.timelineZoomScale * 100)))%")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reset Timeline Zoom to 100% Fit (⌘0)")
                     }
-                    .frame(width: 55)
-                    .tint(.blue)
                 }
             }
             .padding(.horizontal, 16)
@@ -851,13 +976,17 @@ public struct EditorStudioView: View {
                 
                 // Right Tracks Canvas
                 GeometryReader { geo in
-                    let trackWidth = max(100, geo.size.width - 24)
+                    let baseTrackWidth = max(100, geo.size.width - 24)
+                    let trackWidth = baseTrackWidth * CGFloat(appState.timelineZoomScale)
                     let totalDur = max(0.1, appState.totalDuration)
+                    let contentWidth = max(geo.size.width, trackWidth + 24)
                     
-                    ZStack(alignment: .topLeading) {
-                        Color(red: 0.07, green: 0.08, blue: 0.11)
-                        
-                        VStack(alignment: .leading, spacing: 6) {
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        ZStack(alignment: .topLeading) {
+                            Color(red: 0.07, green: 0.08, blue: 0.11)
+                                .frame(width: contentWidth, height: geo.size.height)
+                            
+                            VStack(alignment: .leading, spacing: 6) {
                             // 1. Dynamic Ruler
                             dynamicRuler(trackWidth: trackWidth)
                             
@@ -1008,19 +1137,21 @@ public struct EditorStudioView: View {
                             )
                             .offset(x: playheadX)
                             .allowsHitTesting(false)
-                    }
-                    .onContinuousHover(coordinateSpace: .local) { phase in
-                        switch phase {
-                        case .active(let pt):
-                            let ratio = max(0.0, min(1.0, (pt.x - 10) / trackWidth))
-                            let sec = Double(ratio) * totalDur
-                            hoverTimelineSec = sec
-                            isHoveringTimeline = true
-                            appState.previewHover(at: sec)
-                        case .ended:
-                            hoverTimelineSec = nil
-                            isHoveringTimeline = false
-                            appState.endHoverPreview()
+                        }
+                        .frame(width: contentWidth, height: geo.size.height, alignment: .topLeading)
+                        .onContinuousHover(coordinateSpace: .local) { phase in
+                            switch phase {
+                            case .active(let pt):
+                                let ratio = max(0.0, min(1.0, (pt.x - 10) / trackWidth))
+                                let sec = Double(ratio) * totalDur
+                                hoverTimelineSec = sec
+                                isHoveringTimeline = true
+                                appState.previewHover(at: sec)
+                            case .ended:
+                                hoverTimelineSec = nil
+                                isHoveringTimeline = false
+                                appState.endHoverPreview()
+                            }
                         }
                     }
                 }
@@ -1028,6 +1159,9 @@ public struct EditorStudioView: View {
             .frame(height: max(75, timelineHeight - 40))
         }
         .frame(height: timelineHeight)
+        .onHover { hovering in
+            isHoveringTimelineArea = hovering
+        }
     }
     
     // MARK: - Dynamic Timeline Ruler (Clean Modern Ruler matching Gambar 2)
@@ -1035,19 +1169,22 @@ public struct EditorStudioView: View {
     private func dynamicRuler(trackWidth: CGFloat) -> some View {
         let dur = max(1.0, appState.totalDuration)
         
-        // Adaptive major and minor tick intervals
+        // Adaptive major and minor tick intervals based on zoom scale
+        let visibleDur = dur / max(1.0, appState.timelineZoomScale)
         let (majorStep, minorStep): (Double, Double) = {
-            if dur <= 8 {
+            if visibleDur <= 4 {
+                return (0.5, 0.1)
+            } else if visibleDur <= 8 {
                 return (1.0, 0.2)
-            } else if dur <= 16 {
+            } else if visibleDur <= 16 {
                 return (2.0, 0.5)
-            } else if dur <= 75 {
+            } else if visibleDur <= 75 {
                 return (5.0, 1.0)
-            } else if dur <= 150 {
+            } else if visibleDur <= 150 {
                 return (10.0, 2.0)
-            } else if dur <= 300 {
+            } else if visibleDur <= 300 {
                 return (15.0, 5.0)
-            } else if dur <= 600 {
+            } else if visibleDur <= 600 {
                 return (30.0, 10.0)
             } else {
                 return (60.0, 15.0)
@@ -1138,6 +1275,20 @@ public struct EditorStudioView: View {
                 Text("\(Int(appState.exportProgress * 100))%")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
+                
+                Button(action: {
+                    appState.cancelExport()
+                }) {
+                    Text("Cancel")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
             }
             .padding(24)
             .background(Color(red: 0.12, green: 0.14, blue: 0.18))

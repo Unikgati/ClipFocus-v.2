@@ -86,12 +86,6 @@ public struct FloatingControlBarView: View {
                         Text("Auto Zoom on Typing")
                     }
                 }
-                
-                Divider()
-                
-                Button("More Settings") {
-                    appState.openMoreSettings()
-                }
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "gearshape")

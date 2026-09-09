@@ -11,19 +11,11 @@ public struct CameraPropertiesSidebarView: View {
         self.appState = appState
     }
     
-    /// Resolves the currently active keyframe index safely
+    /// Resolves the currently active keyframe index safely (Strict selection: only active when explicitly selected)
     private var activeIndex: Int? {
         if let id = appState.selectedKeyframeID,
            let idx = appState.zoomKeyframes.firstIndex(where: { $0.id == id }) {
             return idx
-        }
-        // If playhead is over a keyframe, resolve it
-        if let idx = appState.zoomKeyframes.firstIndex(where: { appState.currentTime >= $0.startTime && appState.currentTime < ($0.startTime + $0.duration) }) {
-            return idx
-        }
-        // If there is only 1 keyframe in the project, use it
-        if appState.zoomKeyframes.count == 1 {
-            return 0
         }
         return nil
     }
@@ -44,14 +36,9 @@ public struct CameraPropertiesSidebarView: View {
         VStack(spacing: 16) {
             Spacer().frame(height: 12)
             
-            ZStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.12))
-                    .frame(width: 54, height: 54)
-                Image(systemName: "camera.viewfinder")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color.cyan)
-            }
+            Image(systemName: "camera.viewfinder")
+                .font(.system(size: 32, weight: .medium))
+                .foregroundStyle(Color.cyan)
             
             VStack(spacing: 6) {
                 Text("No Zoom Block Active")
@@ -71,21 +58,15 @@ public struct CameraPropertiesSidebarView: View {
             }) {
                 HStack(spacing: 6) {
                     Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("Add Zoom Block Here")
-                        .font(.system(size: 11.5, weight: .bold))
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Add Zoom")
+                        .font(.system(size: 11.5, weight: .semibold))
                 }
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 34)
-                .background(
-                    LinearGradient(
-                        colors: [Color.blue, Color(red: 0.1, green: 0.6, blue: 0.95)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(height: 32)
+                .background(Color.blue)
+                .clipShape(Capsule())
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

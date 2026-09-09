@@ -72,7 +72,12 @@ public final class AutoZoomEngine: @unchecked Sendable {
     }
     
     /// Generate a list of clean, non-overlapping, professional ZoomKeyframes from raw telemetry events
-    public func generateKeyframes(from events: [TelemetryEvent], totalDuration: TimeInterval) -> [ZoomKeyframe] {
+    public func generateKeyframes(
+        from events: [TelemetryEvent],
+        totalDuration: TimeInterval,
+        preferredEffectType: ZoomEffectType = .zoom2D,
+        autoZoomOnTyping: Bool = true
+    ) -> [ZoomKeyframe] {
         guard !events.isEmpty else { return [] }
         
         // Filter for genuine user interactions during the recording.
@@ -83,13 +88,20 @@ public final class AutoZoomEngine: @unchecked Sendable {
         
         let focalEvents = events.filter { event in
             switch event.type {
-            case .mouseClick, .mouseDrag, .keyDown:
+            case .mouseClick, .mouseDrag:
                 guard event.position != nil else { return false }
                 if totalDuration >= 2.0 {
                     // Ignore start click (e.g. clicking REC or window focus)
                     if event.timestamp < startDeadband { return false }
                     // Ignore stop click (e.g. clicking Stop Recording button)
                     if event.timestamp > endDeadband && (event.type == .mouseClick || event.type == .mouseDrag) { return false }
+                }
+                return true
+            case .keyDown:
+                guard autoZoomOnTyping, event.position != nil else { return false }
+                if totalDuration >= 2.0 {
+                    if event.timestamp < startDeadband { return false }
+                    if event.timestamp > endDeadband { return false }
                 }
                 return true
             default:
@@ -109,12 +121,18 @@ public final class AutoZoomEngine: @unchecked Sendable {
             var clusterPositions: [CGPoint] = []
             var isTyping = false
             var clusterEndTime = currentEvent.timestamp
+            let firstPos = currentEvent.position ?? CGPoint(x: 0.5, y: 0.5)
             
             var j = i
-            // Continuous window coalescing (2.5s)
+            // Continuous window coalescing: only group events that are spatially in the same region (< 0.28 distance)
             while j < focalEvents.count && (focalEvents[j].timestamp - clusterEndTime) <= config.clusterWindowDuration {
                 let ev = focalEvents[j]
                 if let pos = ev.position {
+                    let dist = hypot(pos.x - firstPos.x, pos.y - firstPos.y)
+                    // If user clicks at a distinct separate location (> 0.28 distance), start a new focal keyframe!
+                    if dist > 0.28 && ev.type == .mouseClick {
+                        break
+                    }
                     clusterPositions.append(pos)
                 }
                 if ev.type == .keyDown {
@@ -172,7 +190,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
         
         for (idx, cluster) in mergedClusters.enumerated() {
             let scale = cluster.isTyping ? config.textInputZoomScale : config.defaultZoomScale
-            let idealDuration = max(3.0, (cluster.endTime - cluster.startTime) + 2.0)
+            let idealDuration = max(2.5, (cluster.endTime - cluster.startTime) + 2.0)
             
             var start = cluster.startTime
             var dur = idealDuration
@@ -180,8 +198,13 @@ public final class AutoZoomEngine: @unchecked Sendable {
             // If previous keyframe exists:
             if let prev = keyframes.last {
                 let prevEnd = prev.startTime + prev.duration
-                // If cluster starts within 2.5s of prevEnd, snap contiguously (zero gap) to enable seamless gliding morph!
-                if start <= prevEnd + 2.5 {
+                if start < prevEnd {
+                    // New cluster begins before previous finished its full ideal duration:
+                    // trim previous keyframe duration to start of new cluster so camera morphs on time!
+                    let trimmedDur = max(1.2, cluster.startTime - prev.startTime)
+                    keyframes[keyframes.count - 1].duration = trimmedDur
+                    start = prev.startTime + trimmedDur
+                } else if start <= prevEnd + 2.0 {
                     start = prevEnd
                 }
             }
@@ -190,16 +213,18 @@ public final class AutoZoomEngine: @unchecked Sendable {
             if idx + 1 < mergedClusters.count {
                 let nextStart = mergedClusters[idx + 1].startTime
                 if (start + dur) > nextStart {
-                    dur = max(1.8, nextStart - start)
+                    dur = max(1.2, nextStart - start)
                 }
             }
             
             // Clamp within total video duration
             if (start + dur) > totalDuration {
-                dur = max(1.2, totalDuration - start)
+                dur = max(1.0, totalDuration - start)
             }
             
-            if start < totalDuration && dur >= 1.0 {
+            if start < totalDuration && dur >= 0.8 {
+                let effect = preferredEffectType
+                let tilt: TiltPreset = (effect == .motion3D) ? .auto : .flat
                 keyframes.append(
                     ZoomKeyframe(
                         startTime: start,
@@ -207,8 +232,8 @@ public final class AutoZoomEngine: @unchecked Sendable {
                         focusPoint: cluster.focus,
                         scale: scale,
                         easing: .springSmooth,
-                        effectType: .zoom2D,
-                        tiltPreset: .flat,
+                        effectType: effect,
+                        tiltPreset: tilt,
                         isAutoGenerated: true,
                         reason: cluster.isTyping ? "text_input" : "click_cluster"
                     )
@@ -257,7 +282,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
         let dt = e1.timestamp - e0.timestamp
         if dt <= 0.001 { return p0 }
         
-        let progress = (time - e0.timestamp) / dt
+        let progress = max(0.0, min(1.0, (time - e0.timestamp) / dt))
         // Smoothstep (3t^2 - 2t^3) removes sharp C0 velocity kinks between discrete telemetry samples
         let smoothP = progress * progress * (3.0 - 2.0 * progress)
         let x = p0.x + (p1.x - p0.x) * CGFloat(smoothP)
@@ -265,93 +290,96 @@ public final class AutoZoomEngine: @unchecked Sendable {
         return CGPoint(x: x, y: y)
     }
     
-    /// Professional Viewport Push-Box Framing (FocuSee / Screen Studio style)
+    /// Professional Viewport Camera Steadicam Framing (Screen Studio / FocuSee style)
     /// 
-    /// 1. Expansive Deadzone Safe Zone (~82% of visible zoomed viewport): Camera is 100% stationary and locked on a virtual tripod.
-    /// 2. C^2 Smooth Rim Cushioning (Zero Derivative at Boundary): Eliminates all micro-jitter or vibration when shaking the cursor near the safe zone edge.
-    /// 3. Progressive Edge Push: Smoothly and gradually adjusts framing when cursor pushes well outside the safe zone.
+    /// 1. Inner Tripod Deadzone (~28% of viewport): Camera is 100% stationary and locked on small hand twitches.
+    /// 2. C^2 Smooth Acceleration: When moving between distant clicks (e.g. top to bottom), camera fluidly glides along.
+    /// 3. Guaranteed Cursor Capture: Keeps cursor comfortably framed in the safe viewing area (center 60%), never clipped.
     public func smoothCameraFocus(at time: TimeInterval, from events: [TelemetryEvent], basePoint: CGPoint, scale: CGFloat = 2.0) -> CGPoint {
         guard !events.isEmpty else { return basePoint }
         
         let effScale = max(1.0, scale)
-        
-        // Half-span of visible screen viewport at this zoom scale:
         let halfSpanX = (0.5 / effScale)
         let halfSpanY = (0.5 / effScale)
         
-        // Expansive Safe Deadzone (82% of visible viewport from camera anchor)
-        // Inside this large zone, camera is completely LOCKED on tripod (0.000 movement)
-        let deadzoneRadiusX = halfSpanX * 0.82
-        let deadzoneRadiusY = halfSpanY * 0.82
-        let cushionSpanX = max(0.001, halfSpanX * 0.18)
-        let cushionSpanY = max(0.001, halfSpanY * 0.18)
+        // Inner tripod deadzone: small hand micro-shakes produce zero camera movement
+        let innerDeadzoneX = halfSpanX * 0.28
+        let innerDeadzoneY = halfSpanY * 0.28
         
-        // Compute Push-Box camera target with C^2 continuous rim cushioning
-        let computePushBoxTarget: (CGPoint) -> CGPoint = { pos in
+        // Outer safe boundary: ensure cursor NEVER gets close to the screen edge
+        let outerSpanX = halfSpanX * 0.65
+        let outerSpanY = halfSpanY * 0.65
+        
+        let computePushTarget: (CGPoint) -> CGPoint = { pos in
             let dx = pos.x - basePoint.x
             let dy = pos.y - basePoint.y
             let absDx = abs(dx)
             let absDy = abs(dy)
             
             var shiftX: CGFloat = 0.0
-            var shiftY: CGFloat = 0.0
-            
-            // X-Axis C^2 Smooth Cushioning: zero slope at boundary = zero boundary jitter!
-            if absDx > deadzoneRadiusX {
-                let excess = absDx - deadzoneRadiusX
-                let ratio = min(1.0, excess / cushionSpanX)
-                // Smoothstep (3r^2 - 2r^3): continuous 1st and 2nd derivatives
-                let easedRatio = CGFloat(ratio * ratio * (3.0 - 2.0 * Double(ratio)))
-                shiftX = (dx > 0 ? 1.0 : -1.0) * (excess * (0.35 + 0.65 * easedRatio))
+            if absDx > innerDeadzoneX {
+                let excess = absDx - innerDeadzoneX
+                let span = max(0.001, outerSpanX - innerDeadzoneX)
+                let t = min(1.0, excess / span)
+                // Smoothstep (3t^2 - 2t^3)
+                let factor = CGFloat(t * t * (3.0 - 2.0 * Double(t)))
+                shiftX = (dx > 0 ? 1.0 : -1.0) * (excess + (absDx * factor * 0.35))
             }
             
-            // Y-Axis C^2 Smooth Cushioning: zero slope at boundary = zero boundary jitter!
-            if absDy > deadzoneRadiusY {
-                let excess = absDy - deadzoneRadiusY
-                let ratio = min(1.0, excess / cushionSpanY)
-                let easedRatio = CGFloat(ratio * ratio * (3.0 - 2.0 * Double(ratio)))
-                shiftY = (dy > 0 ? 1.0 : -1.0) * (excess * (0.35 + 0.65 * easedRatio))
+            var shiftY: CGFloat = 0.0
+            if absDy > innerDeadzoneY {
+                let excess = absDy - innerDeadzoneY
+                let span = max(0.001, outerSpanY - innerDeadzoneY)
+                let t = min(1.0, excess / span)
+                let factor = CGFloat(t * t * (3.0 - 2.0 * Double(t)))
+                shiftY = (dy > 0 ? 1.0 : -1.0) * (excess + (absDy * factor * 0.35))
             }
             
             let camX = basePoint.x + shiftX
             let camY = basePoint.y + shiftY
             
-            // Safe display margins clamp
+            // Strictly clamp camera to keep entire viewport within [0.0, 1.0]
             let clampedX = max(halfSpanX, min(1.0 - halfSpanX, camX))
             let clampedY = max(halfSpanY, min(1.0 - halfSpanY, camY))
             return CGPoint(x: clampedX, y: clampedY)
         }
         
-        // Continuous Smooth Gaussian Integration (0.80s window, 21 samples, sigma = 0.30s)
-        let sampleCount = 21
-        let dtStep = 0.04
-        let halfSpanSamples = Double(sampleCount - 1) / 2.0
-        let sigma = 0.30
+        // Compact 7-point Gaussian smoothing window (avoids erratic wide lookahead ripples)
+        let sampleOffsets: [(dt: Double, weight: Double)] = [
+            (-0.14, 0.06),
+            (-0.10, 0.10),
+            (-0.05, 0.18),
+            (0.0,   0.28),
+            (0.04,  0.20),
+            (0.08,  0.12),
+            (0.12,  0.06)
+        ]
         
         var totalWeight: CGFloat = 0.0
         var sumX: CGFloat = 0.0
         var sumY: CGFloat = 0.0
         
-        for i in 0..<sampleCount {
-            let offsetSec = (Double(i) - halfSpanSamples) * dtStep
-            let sampleTime = max(0, time + offsetSec)
-            let samplePos = cursorPosition(at: sampleTime, from: events, fallback: basePoint)
-            let pushTarget = computePushBoxTarget(samplePos)
-            
-            let weight = CGFloat(exp(-0.5 * pow(offsetSec / sigma, 2.0)))
-            sumX += pushTarget.x * weight
-            sumY += pushTarget.y * weight
-            totalWeight += weight
+        for sample in sampleOffsets {
+            let sTime = max(0, time + sample.dt)
+            let sPos = cursorPosition(at: sTime, from: events, fallback: basePoint)
+            let target = computePushTarget(sPos)
+            let w = CGFloat(sample.weight)
+            sumX += target.x * w
+            sumY += target.y * w
+            totalWeight += w
         }
         
         if totalWeight > 0.001 {
             let resX = sumX / totalWeight
             let resY = sumY / totalWeight
-            return CGPoint(x: max(halfSpanX, min(1.0 - halfSpanX, resX)), y: max(halfSpanY, min(1.0 - halfSpanY, resY)))
+            return CGPoint(
+                x: max(halfSpanX, min(1.0 - halfSpanX, resX)),
+                y: max(halfSpanY, min(1.0 - halfSpanY, resY))
+            )
         }
         
         let curPos = cursorPosition(at: time, from: events, fallback: basePoint)
-        return computePushBoxTarget(curPos)
+        return computePushTarget(curPos)
     }
     
     /// Calculate the interpolated viewport (scale, center, 3D tilt, and dynamic motion blur) at any playback timestamp
@@ -363,11 +391,11 @@ public final class AutoZoomEngine: @unchecked Sendable {
     ) -> ViewportState {
         guard !keyframes.isEmpty else { return .fullScreen }
         
-        // Pre-filter valid events once per evaluation
-        let validEvents = telemetry.filter { $0.position != nil }
+        // Pre-filter valid events once per evaluation and ensure strictly sorted order
+        let validEvents = telemetry.filter { $0.position != nil }.sorted { $0.timestamp < $1.timestamp }
         let sortedKFs = keyframes.sorted { $0.startTime < $1.startTime }
         
-        let adjacencyThreshold: TimeInterval = 0.85
+        let adjacencyThreshold: TimeInterval = 2.0
         
         for i in 0..<sortedKFs.count {
             let kf = sortedKFs[i]

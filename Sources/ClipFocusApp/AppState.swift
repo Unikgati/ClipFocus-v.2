@@ -157,16 +157,6 @@ public final class AppState: @unchecked Sendable {
         if let id = selectedKeyframeID, let idx = zoomKeyframes.firstIndex(where: { $0.id == id }) {
             return idx
         }
-        if let idx = zoomKeyframes.firstIndex(where: { currentTime >= $0.startTime && currentTime < ($0.startTime + $0.duration) }) {
-            return idx
-        }
-        if zoomKeyframes.count == 1 {
-            return 0
-        }
-        if let nearest = zoomKeyframes.min(by: { abs($0.startTime - currentTime) < abs($1.startTime - currentTime) }),
-           let idx = zoomKeyframes.firstIndex(where: { $0.id == nearest.id }) {
-            return idx
-        }
         return nil
     }
 
@@ -395,6 +385,7 @@ public final class AppState: @unchecked Sendable {
     public var isPlaying: Bool = false
     public var playbackSpeed: Double = 1.0
     public var audioVolume: Double = 1.0
+    public var timelineZoomScale: Double = 1.0
     public var isScrubbing: Bool = false
     public var selectedKeyframeID: UUID? = nil
     
@@ -402,6 +393,16 @@ public final class AppState: @unchecked Sendable {
     public var isExporting: Bool = false
     public var exportProgress: Double = 0.0
     public var exportSuccessMessage: String? = nil
+    public var lastExportedURL: URL? = nil
+    private var isSavePanelActive: Bool = false
+    private var activeExportSession: AVAssetExportSession? = nil
+    
+    public func cancelExport() {
+        activeExportSession?.cancelExport()
+        activeExportSession = nil
+        isExporting = false
+        exportProgress = 0.0
+    }
     
     public var telemetryEvents: [TelemetryEvent] = []
     public let captureManager = CaptureManager.shared
@@ -501,11 +502,6 @@ public final class AppState: @unchecked Sendable {
     public func closeControlBar() {
         self.selectedMode = nil
         self.currentView = .launcher
-    }
-    
-    /// User clicks "More Settings" from floating control bar popup menu
-    public func openMoreSettings() {
-        closeControlBar()
     }
     
     private func setDesktopIconsHidden(_ hidden: Bool) {
@@ -625,6 +621,8 @@ public final class AppState: @unchecked Sendable {
         Task { @MainActor in
             do {
                 try await self.captureManager.discardRecording()
+                // Allow ScreenCaptureKit to cleanly release previous stream before immediate restart
+                try? await Task.sleep(nanoseconds: 250_000_000)
                 self.executeStartRecording()
             } catch {
                 NSLog("Failed to restart recording: %@", error.localizedDescription)
@@ -656,7 +654,11 @@ public final class AppState: @unchecked Sendable {
                 self.isFinalizingRecording = false
             }
             do {
-                let (videoURL, project) = try await self.captureManager.stopRecording()
+                let effectType: ZoomEffectType = (self.zoomDimension == .threeD) ? .motion3D : .zoom2D
+                let (videoURL, project) = try await self.captureManager.stopRecording(
+                    preferredEffectType: effectType,
+                    autoZoomOnTyping: self.autoZoomOnTyping
+                )
                 guard FileManager.default.fileExists(atPath: videoURL.path),
                       let attrs = try? FileManager.default.attributesOfItem(atPath: videoURL.path),
                       (attrs[.size] as? Int64 ?? 0) > 1024 else {
@@ -1412,92 +1414,109 @@ public final class AppState: @unchecked Sendable {
         let t = currentTime
         var hasSplitAnything = false
         
-        // 1. If a specific video clip is selected, split it; otherwise split any video clip intersecting playhead
-        if let targetIdx = videoSegments.firstIndex(where: { t > ($0.timelineStartTime + 0.05) && t < ($0.timelineEndTime - 0.05) && (selectedSegmentID == nil || selectedSegmentID == $0.id) }) {
-            recordUndoState()
-            let original = videoSegments[targetIdx]
-            let firstDur = t - original.timelineStartTime
-            let secondDur = original.duration - firstDur
-            
-            videoSegments[targetIdx].duration = firstDur
-            
-            let secondPart = MediaClipSegment(
-                trackType: .video,
-                name: "\(original.name) (Cut)",
-                sourceStartTime: original.sourceStartTime + firstDur,
-                timelineStartTime: t,
-                duration: secondDur,
-                isMuted: original.isMuted,
-                volume: original.volume
-            )
-            videoSegments.append(secondPart)
-            videoSegments.sort { $0.timelineStartTime < $1.timelineStartTime }
-            selectSegment(id: secondPart.id, trackType: .video)
-            hasSplitAnything = true
+        let hasSpecificSelection = (selectedSegmentID != nil || selectedKeyframeID != nil)
+        
+        // 1. Video track split:
+        // If a video clip is explicitly selected, split only it.
+        // If nothing is selected at all, split any video clip intersecting the playhead.
+        let shouldSplitVideo = (!hasSpecificSelection) || (selectedTrackType == .video && selectedSegmentID != nil)
+        if shouldSplitVideo {
+            if let targetIdx = videoSegments.firstIndex(where: { t > ($0.timelineStartTime + 0.05) && t < ($0.timelineEndTime - 0.05) && (selectedSegmentID == nil || selectedSegmentID == $0.id) }) {
+                recordUndoState()
+                let original = videoSegments[targetIdx]
+                let firstDur = t - original.timelineStartTime
+                let secondDur = original.duration - firstDur
+                
+                videoSegments[targetIdx].duration = firstDur
+                
+                let secondPart = MediaClipSegment(
+                    trackType: .video,
+                    name: "\(original.name) (Cut)",
+                    sourceStartTime: original.sourceStartTime + firstDur,
+                    timelineStartTime: t,
+                    duration: secondDur,
+                    isMuted: original.isMuted,
+                    volume: original.volume
+                )
+                videoSegments.append(secondPart)
+                videoSegments.sort { $0.timelineStartTime < $1.timelineStartTime }
+                selectSegment(id: secondPart.id, trackType: .video)
+                hasSplitAnything = true
+            }
         }
         
-        // 2. If a specific audio clip is selected, split it; otherwise split any audio clip intersecting playhead
-        if let targetIdx = audioSegments.firstIndex(where: { t > ($0.timelineStartTime + 0.05) && t < ($0.timelineEndTime - 0.05) && (selectedSegmentID == nil || selectedSegmentID == $0.id) }) {
-            if !hasSplitAnything {
-                recordUndoState()
+        // 2. Audio track split:
+        // If an audio clip is explicitly selected, split only it.
+        // If nothing is selected at all, split any audio clip intersecting the playhead.
+        let shouldSplitAudio = (!hasSpecificSelection) || (selectedTrackType == .audio && selectedSegmentID != nil)
+        if shouldSplitAudio {
+            if let targetIdx = audioSegments.firstIndex(where: { t > ($0.timelineStartTime + 0.05) && t < ($0.timelineEndTime - 0.05) && (selectedSegmentID == nil || selectedSegmentID == $0.id) }) {
+                if !hasSplitAnything {
+                    recordUndoState()
+                }
+                let original = audioSegments[targetIdx]
+                let firstDur = t - original.timelineStartTime
+                let secondDur = original.duration - firstDur
+                
+                audioSegments[targetIdx].duration = firstDur
+                
+                let secondPart = MediaClipSegment(
+                    trackType: .audio,
+                    name: "\(original.name) (Cut)",
+                    sourceStartTime: original.sourceStartTime + firstDur,
+                    timelineStartTime: t,
+                    duration: secondDur,
+                    isMuted: original.isMuted,
+                    volume: original.volume
+                )
+                audioSegments.append(secondPart)
+                audioSegments.sort { $0.timelineStartTime < $1.timelineStartTime }
+                if !hasSplitAnything {
+                    selectSegment(id: secondPart.id, trackType: .audio)
+                }
+                hasSplitAnything = true
             }
-            let original = audioSegments[targetIdx]
-            let firstDur = t - original.timelineStartTime
-            let secondDur = original.duration - firstDur
-            
-            audioSegments[targetIdx].duration = firstDur
-            
-            let secondPart = MediaClipSegment(
-                trackType: .audio,
-                name: "\(original.name) (Cut)",
-                sourceStartTime: original.sourceStartTime + firstDur,
-                timelineStartTime: t,
-                duration: secondDur,
-                isMuted: original.isMuted,
-                volume: original.volume
-            )
-            audioSegments.append(secondPart)
-            audioSegments.sort { $0.timelineStartTime < $1.timelineStartTime }
-            if !hasSplitAnything {
-                selectSegment(id: secondPart.id, trackType: .audio)
-            }
-            hasSplitAnything = true
         }
         
-        // 3. If a zoom keyframe intersects playhead, split it
-        if let idx = zoomKeyframes.firstIndex(where: { t > ($0.startTime + 0.05) && t < ($0.startTime + $0.duration - 0.05) && (selectedKeyframeID == nil || selectedKeyframeID == $0.id) }) {
-            if !hasSplitAnything {
-                recordUndoState()
+        // 3. Zoom keyframe track split:
+        // If a zoom block is explicitly selected, split only it.
+        // If nothing is selected at all, split any zoom block intersecting the playhead.
+        let shouldSplitZoom = (!hasSpecificSelection) || (selectedKeyframeID != nil)
+        if shouldSplitZoom {
+            if let idx = zoomKeyframes.firstIndex(where: { t > ($0.startTime + 0.05) && t < ($0.startTime + $0.duration - 0.05) && (selectedKeyframeID == nil || selectedKeyframeID == $0.id) }) {
+                if !hasSplitAnything {
+                    recordUndoState()
+                }
+                let original = zoomKeyframes[idx]
+                let firstDuration = t - original.startTime
+                let secondDuration = original.duration - firstDuration
+                
+                zoomKeyframes[idx].duration = firstDuration
+                
+                let secondPart = ZoomKeyframe(
+                    startTime: t,
+                    duration: secondDuration,
+                    focusPoint: original.focusPoint,
+                    scale: original.scale,
+                    easing: original.easing,
+                    effectType: original.effectType,
+                    tiltPreset: original.tiltPreset,
+                    customPitch: original.customPitch,
+                    customYaw: original.customYaw,
+                    customRoll: original.customRoll,
+                    positionOffsetX: original.positionOffsetX,
+                    positionOffsetY: original.positionOffsetY,
+                    isAutoGenerated: false,
+                    reason: "split"
+                )
+                zoomKeyframes.append(secondPart)
+                zoomKeyframes.sort { $0.startTime < $1.startTime }
+                if !hasSplitAnything {
+                    selectedKeyframeID = secondPart.id
+                }
+                evaluateCurrentZoom()
+                hasSplitAnything = true
             }
-            let original = zoomKeyframes[idx]
-            let firstDuration = t - original.startTime
-            let secondDuration = original.duration - firstDuration
-            
-            zoomKeyframes[idx].duration = firstDuration
-            
-            let secondPart = ZoomKeyframe(
-                startTime: t,
-                duration: secondDuration,
-                focusPoint: original.focusPoint,
-                scale: original.scale,
-                easing: original.easing,
-                effectType: original.effectType,
-                tiltPreset: original.tiltPreset,
-                customPitch: original.customPitch,
-                customYaw: original.customYaw,
-                customRoll: original.customRoll,
-                positionOffsetX: original.positionOffsetX,
-                positionOffsetY: original.positionOffsetY,
-                isAutoGenerated: false,
-                reason: "split"
-            )
-            zoomKeyframes.append(secondPart)
-            zoomKeyframes.sort { $0.startTime < $1.startTime }
-            if !hasSplitAnything {
-                selectedKeyframeID = secondPart.id
-            }
-            evaluateCurrentZoom()
-            hasSplitAnything = true
         }
         
         syncPlaybackToCurrentTime(accurate: true)
@@ -1670,8 +1689,23 @@ public final class AppState: @unchecked Sendable {
     
     // MARK: - Real Video Export with Cut Composition
     
+    @MainActor
     public func exportVideo() {
-        guard let sourceURL = recordedVideoURL else { return }
+        NSLog("[ClipFocus] exportVideo triggered! recordedVideoURL: %@, segments: %ld", String(describing: recordedVideoURL), videoSegments.count)
+        guard !isSavePanelActive && !isExporting else {
+            NSLog("[ClipFocus] exportVideo ignored: save panel already active or currently exporting")
+            return
+        }
+        guard let sourceURL = recordedVideoURL else {
+            errorMessage = "No recorded video to export. Please record or open a video first."
+            return
+        }
+        guard !videoSegments.isEmpty else {
+            errorMessage = "Timeline has no video segments to export."
+            return
+        }
+        
+        isSavePanelActive = true
         
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie]
@@ -1679,7 +1713,42 @@ public final class AppState: @unchecked Sendable {
         savePanel.nameFieldStringValue = "ClipFocus_\(sourceURL.deletingPathExtension().lastPathComponent)_Export.mp4"
         savePanel.title = "Export Video"
         
-        guard savePanel.runModal() == .OK, let destinationURL = savePanel.url else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let targetWindow = WindowManager.shared.currentEditorWindow ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
+        
+        if let window = targetWindow, window.attachedSheet == nil {
+            window.makeKeyAndOrderFront(nil)
+            savePanel.beginSheetModal(for: window) { [weak self] response in
+                guard let self = self else { return }
+                self.isSavePanelActive = false
+                guard response == .OK, let destinationURL = savePanel.url else {
+                    NSLog("[ClipFocus] Export cancelled by user in sheet")
+                    return
+                }
+                self.startExportPipeline(destinationURL: destinationURL, sourceURL: sourceURL)
+            }
+        } else {
+            savePanel.begin { [weak self] response in
+                guard let self = self else { return }
+                self.isSavePanelActive = false
+                guard response == .OK, let destinationURL = savePanel.url else {
+                    NSLog("[ClipFocus] Export cancelled by user in standalone panel")
+                    return
+                }
+                self.startExportPipeline(destinationURL: destinationURL, sourceURL: sourceURL)
+            }
+        }
+    }
+    
+    @MainActor
+    private func startExportPipeline(destinationURL: URL, sourceURL: URL) {
+        NSLog("[ClipFocus] startExportPipeline to destination: %@", destinationURL.path)
+        // Disk space check (require at least 50MB)
+        if let values = try? destinationURL.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+           let available = values.volumeAvailableCapacity, available < 50 * 1024 * 1024 {
+            errorMessage = "Insufficient disk space to export video. Please free up space and try again."
+            return
+        }
         
         try? FileManager.default.removeItem(at: destinationURL)
         
@@ -1707,24 +1776,33 @@ public final class AppState: @unchecked Sendable {
                                 duration: CMTime(seconds: vSeg.duration, preferredTimescale: 600)
                             )
                             let atTime = CMTime(seconds: vSeg.timelineStartTime, preferredTimescale: 600)
-                            try? compVideoTrack.insertTimeRange(sourceRange, of: assetVideoTrack, at: atTime)
+                            do {
+                                try compVideoTrack.insertTimeRange(sourceRange, of: assetVideoTrack, at: atTime)
+                            } catch {
+                                print("[Export] Warning: Failed to insert video segment \(vSeg.id): \(error)")
+                            }
                         }
                     }
                 }
                 
-                // 2. Build Audio Track Composition
+                // 2. Build Audio Track Composition (Multi-Track Support: System Audio + Microphone)
                 if !self.isAudioMuted && !self.audioSegments.isEmpty {
-                    if let assetAudioTracks = try? await asset.loadTracks(withMediaType: .audio),
-                       let assetAudioTrack = assetAudioTracks.first,
-                       let compAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                        
-                        for aSeg in self.audioSegments where !aSeg.isMuted {
-                            let sourceRange = CMTimeRange(
-                                start: CMTime(seconds: aSeg.sourceStartTime, preferredTimescale: 600),
-                                duration: CMTime(seconds: aSeg.duration, preferredTimescale: 600)
-                            )
-                            let atTime = CMTime(seconds: aSeg.timelineStartTime, preferredTimescale: 600)
-                            try? compAudioTrack.insertTimeRange(sourceRange, of: assetAudioTrack, at: atTime)
+                    if let assetAudioTracks = try? await asset.loadTracks(withMediaType: .audio) {
+                        for assetAudioTrack in assetAudioTracks {
+                            if let compAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                                for aSeg in self.audioSegments where !aSeg.isMuted {
+                                    let sourceRange = CMTimeRange(
+                                        start: CMTime(seconds: aSeg.sourceStartTime, preferredTimescale: 600),
+                                        duration: CMTime(seconds: aSeg.duration, preferredTimescale: 600)
+                                    )
+                                    let atTime = CMTime(seconds: aSeg.timelineStartTime, preferredTimescale: 600)
+                                    do {
+                                        try compAudioTrack.insertTimeRange(sourceRange, of: assetAudioTrack, at: atTime)
+                                    } catch {
+                                        print("[Export] Warning: Failed to insert audio segment \(aSeg.id): \(error)")
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1737,30 +1815,119 @@ public final class AppState: @unchecked Sendable {
                     return
                 }
                 
+                // 3. Attach Offline Video Compositor (Burns in Zoom, 3D Tilt, Canvas Background & Styling)
+                if !self.isVideoTrackHidden && !self.videoSegments.isEmpty {
+                    var targetRatio: CGFloat = 16.0 / 9.0
+                    switch self.canvasRatio {
+                    case "16:9": targetRatio = 16.0 / 9.0
+                    case "9:16": targetRatio = 9.0 / 16.0
+                    case "1:1": targetRatio = 1.0
+                    case "4:3": targetRatio = 4.0 / 3.0
+                    case "21:9": targetRatio = 21.0 / 9.0
+                    default:
+                        if let w = Double(self.customWidth), let h = Double(self.customHeight), h > 0 {
+                            targetRatio = CGFloat(w / h)
+                        }
+                    }
+                    
+                    let renderWidth: CGFloat
+                    let renderHeight: CGFloat
+                    if targetRatio >= 1.0 {
+                        let h: CGFloat = 1080.0
+                        let w = CGFloat(Int(round(h * targetRatio)) & ~1)
+                        renderWidth = w
+                        renderHeight = h
+                    } else {
+                        let w: CGFloat = 1080.0
+                        let h = CGFloat(Int(round(w / targetRatio)) & ~1)
+                        renderWidth = w
+                        renderHeight = h
+                    }
+                    let renderSize = CGSize(width: renderWidth, height: renderHeight)
+                    
+                    let scaleFactor = max(1.0, renderWidth / 900.0)
+                    let scaledPadding = CGFloat(self.padding) * scaleFactor * 1.5
+                    let scaledRoundness = CGFloat(self.roundness) * scaleFactor * 1.5
+                    let scaledShadow = CGFloat(self.shadow) * scaleFactor * 1.2
+                    
+                    let compositorConfig = VideoCompositorConfig(
+                        renderSize: renderSize,
+                        padding: scaledPadding,
+                        cornerRadius: scaledRoundness,
+                        shadowRadius: scaledShadow,
+                        activeBackgroundIndex: self.activeBackgroundIndex,
+                        activeColorIndex: self.activeColorIndex,
+                        zoomKeyframes: self.zoomKeyframes,
+                        telemetryEvents: self.telemetryEvents,
+                        tiltIntensity: self.tiltIntensity,
+                        disableZoom: self.disableZoom
+                    )
+                    
+                    let videoComp = VideoCompositorEngine.shared.buildVideoComposition(
+                        for: composition,
+                        config: compositorConfig
+                    )
+                    exportSession.videoComposition = videoComp
+                }
+                
+                await MainActor.run {
+                    self.activeExportSession = exportSession
+                }
+                
                 exportSession.outputURL = destinationURL
-                exportSession.outputFileType = .mp4
+                let ext = destinationURL.pathExtension.lowercased()
+                if ext == "mov" {
+                    exportSession.outputFileType = .mov
+                } else {
+                    exportSession.outputFileType = .mp4
+                }
                 exportSession.shouldOptimizeForNetworkUse = true
                 
-                let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
-                    guard let self = self else { t.invalidate(); return }
-                    if exportSession.status == .exporting {
-                        self.exportProgress = max(0.1, Double(exportSession.progress))
+                // Async progress monitoring safely dispatching to MainActor
+                let progressTask = Task { @MainActor [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        guard let self = self, let session = self.activeExportSession else { break }
+                        if session.status == .exporting {
+                            self.exportProgress = max(0.05, min(0.99, Double(session.progress)))
+                        } else {
+                            break
+                        }
                     }
                 }
                 
-                exportSession.exportAsynchronously { [weak self] in
-                    timer.invalidate()
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        self.isExporting = false
-                        if exportSession.status == .completed {
-                            self.exportProgress = 1.0
-                            self.exportSuccessMessage = "Video exported successfully!"
-                            NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
-                        } else {
-                            self.errorMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
-                        }
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    exportSession.exportAsynchronously {
+                        continuation.resume()
                     }
+                }
+                
+                progressTask.cancel()
+                
+                await MainActor.run {
+                    self.activeExportSession = nil
+                    self.isExporting = false
+                    
+                    switch exportSession.status {
+                    case .completed:
+                        self.exportProgress = 1.0
+                        self.lastExportedURL = destinationURL
+                        self.exportSuccessMessage = "Video exported successfully!"
+                        NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
+                    case .cancelled:
+                        self.exportProgress = 0.0
+                    case .failed:
+                        self.exportProgress = 0.0
+                        self.errorMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
+                    default:
+                        break
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isExporting = false
+                    self.exportProgress = 0.0
+                    self.errorMessage = "Export failed: \(error.localizedDescription)"
                 }
             }
         }

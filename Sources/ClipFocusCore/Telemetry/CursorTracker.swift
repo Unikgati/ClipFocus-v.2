@@ -11,6 +11,8 @@ public protocol CursorTrackerDelegate: AnyObject, Sendable {
 public final class CursorTracker: @unchecked Sendable {
     
     private var isTracking = false
+    public private(set) var isPaused = false
+    private var totalPausedDuration: TimeInterval = 0.0
     private var recordingStartTime: Date?
     private var globalMonitors: [Any] = []
     private var pollingTimer: Timer?
@@ -22,11 +24,26 @@ public final class CursorTracker: @unchecked Sendable {
     
     public init() {}
     
+    public func pauseTracking() {
+        queue.sync {
+            self.isPaused = true
+        }
+    }
+    
+    public func resumeTracking(pausedDuration: TimeInterval) {
+        queue.sync {
+            self.totalPausedDuration += pausedDuration
+            self.isPaused = false
+        }
+    }
+    
     /// Start recording telemetry events
     public func startTracking() {
         queue.sync {
             self.recordedEvents.removeAll()
             self.recordingStartTime = Date()
+            self.totalPausedDuration = 0.0
+            self.isPaused = false
             self.isTracking = true
             self.lastSampledPosition = nil
         }
@@ -70,8 +87,9 @@ public final class CursorTracker: @unchecked Sendable {
     
     /// Sample global hardware cursor location at 60Hz
     private func sampleHardwareCursor() {
-        guard isTracking, let startTime = recordingStartTime else { return }
-        let timestamp = Date().timeIntervalSince(startTime)
+        guard isTracking, !isPaused, let startTime = recordingStartTime else { return }
+        let rawElapsed = Date().timeIntervalSince(startTime)
+        let timestamp = max(0.0, rawElapsed - totalPausedDuration)
         
         let screenPoint = NSEvent.mouseLocation
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first
@@ -128,8 +146,9 @@ public final class CursorTracker: @unchecked Sendable {
     // MARK: - Private Handlers
     
     private func handleMouseEvent(_ event: NSEvent, type: TelemetryEventType) {
-        guard let startTime = recordingStartTime else { return }
-        let timestamp = Date().timeIntervalSince(startTime)
+        guard isTracking, !isPaused, let startTime = recordingStartTime else { return }
+        let rawElapsed = Date().timeIntervalSince(startTime)
+        let timestamp = max(0.0, rawElapsed - totalPausedDuration)
         
         let screenPoint = NSEvent.mouseLocation
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first
@@ -155,8 +174,9 @@ public final class CursorTracker: @unchecked Sendable {
     }
     
     private func handleKeyEvent(_ event: NSEvent) {
-        guard let startTime = recordingStartTime else { return }
-        let timestamp = Date().timeIntervalSince(startTime)
+        guard isTracking, !isPaused, let startTime = recordingStartTime else { return }
+        let rawElapsed = Date().timeIntervalSince(startTime)
+        let timestamp = max(0.0, rawElapsed - totalPausedDuration)
         
         let screenPoint = NSEvent.mouseLocation
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first

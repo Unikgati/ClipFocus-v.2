@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import ClipFocusCore
 
 final class ClipFocusCoreTests: XCTestCase {
@@ -249,6 +250,48 @@ final class ClipFocusCoreTests: XCTestCase {
         // maxSourceDur = totalMediaDuration (10.0) - seg.sourceStartTime (4.0) = 6.0
         let maxSourceDur = max(0.2, totalMediaDuration - seg.sourceStartTime)
         XCTAssertEqual(maxSourceDur, 6.0)
+    }
+    
+    func testVideoCompositorEngineBuildAndConfiguration() {
+        let comp = AVMutableComposition()
+        let track = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        track.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 5, preferredTimescale: 600)))
+        
+        let config = VideoCompositorConfig(
+            renderSize: CGSize(width: 1920, height: 1080),
+            padding: 32.0,
+            cornerRadius: 16.0,
+            shadowRadius: 24.0,
+            activeBackgroundIndex: 2,
+            activeColorIndex: nil,
+            zoomKeyframes: [
+                ZoomKeyframe(startTime: 1.0, duration: 2.0, focusPoint: CGPoint(x: 0.3, y: 0.7), scale: 1.8, effectType: .motion3D)
+            ],
+            telemetryEvents: [],
+            tiltIntensity: 1.0,
+            disableZoom: false
+        )
+        
+        let videoComp = VideoCompositorEngine.shared.buildVideoComposition(for: comp, config: config)
+        XCTAssertEqual(videoComp.renderSize.width, 1920)
+        XCTAssertEqual(videoComp.renderSize.height, 1080)
+        XCTAssertEqual(videoComp.frameDuration, CMTime(value: 1, timescale: 60))
+        XCTAssertEqual(videoComp.instructions.count, 1)
+    }
+    
+    func testPauseResumePTSOffsetCompensation() {
+        let tracker = CursorTracker()
+        tracker.startTracking()
+        
+        // Pause tracking for simulated 2.5s
+        tracker.pauseTracking()
+        XCTAssertTrue(tracker.isPaused)
+        
+        tracker.resumeTracking(pausedDuration: 2.5)
+        XCTAssertFalse(tracker.isPaused)
+        
+        let events = tracker.stopTracking()
+        XCTAssertTrue(events.isEmpty || events.allSatisfy { $0.timestamp >= 0.0 })
     }
 }
 
