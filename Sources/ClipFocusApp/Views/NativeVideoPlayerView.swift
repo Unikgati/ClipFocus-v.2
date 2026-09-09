@@ -44,7 +44,7 @@ public final class CinematicPlayerNSView: NSView {
         
         // Root layer defines smooth, bold 3D cinematic perspective matching FocuSee / Screen Studio
         var perspective = CATransform3DIdentity
-        perspective.m34 = -1.0 / 480.0 // Strong cinematic perspective focal distance with rich depth foreshortening
+        perspective.m34 = -1.0 / 850.0 // True cinematic perspective focal distance with rich depth
         layer?.sublayerTransform = perspective
         
         // Content layer represents the floating video card with 3D tilt and soft drop shadow
@@ -107,14 +107,20 @@ public final class CinematicPlayerNSView: NSView {
         let transX = (0.5 - fx) * bounds.width * scale + (currentPositionX * 2.0)
         let transY = (0.5 - fy) * bounds.height * scale + (currentPositionY * 2.0)
         
-        // Dynamic 3D depth translation (Z-elevation) brings card closer to user in 3D space
-        let elevationZ: CGFloat = is3DEnabled ? min(120.0, (scale - 1.0) * 65.0) : 0.0
+        // Smooth continuous 3D tilt factor (0.0 when flat, smoothly rising to 1.0 when tilted)
+        let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)
+        let tiltRatio = min(1.0, tiltMagnitude)
+        
+        // Dynamic 3D depth translation (Z-elevation):
+        // Elevation is proportional to tilt magnitude and scale, so when transitioning into or out of 2D (pitch=0, yaw=0),
+        // elevationZ smoothly eases to 0.0 with NO popping!
+        let elevationZ: CGFloat = min(70.0, (scale - 1.0) * 45.0) * CGFloat(tiltRatio)
         
         var cardTransform = CATransform3DIdentity
         cardTransform = CATransform3DTranslate(cardTransform, transX, transY, elevationZ)
         cardTransform = CATransform3DScale(cardTransform, scale, scale, 1.0)
         
-        if is3DEnabled && (abs(pitch) > 0.05 || abs(yaw) > 0.05 || abs(roll) > 0.05) {
+        if abs(pitch) > 0.02 || abs(yaw) > 0.02 || abs(roll) > 0.02 {
             let radPitch = CGFloat(pitch * .pi / 180.0)
             let radYaw = CGFloat(yaw * .pi / 180.0)
             let radRoll = CGFloat(roll * .pi / 180.0)
@@ -131,15 +137,14 @@ public final class CinematicPlayerNSView: NSView {
             let ly1 = 0.5 + sin(lightAngle) * 0.5
             lightingLayer.startPoint = CGPoint(x: lx0, y: ly0)
             lightingLayer.endPoint = CGPoint(x: lx1, y: ly1)
-            let tiltMag = min(1.0, hypot(pitch / 25.0, yaw / 25.0))
-            lightingLayer.opacity = Float(tiltMag * 0.70)
+            lightingLayer.opacity = Float(tiltRatio * 0.65)
             
-            // Rich multi-directional dynamic drop shadow matching 3D angle
-            let shadowX = CGFloat(-yaw * 1.8)
-            let shadowY = CGFloat(20.0 + pitch * 1.5)
+            // Rich continuous multi-directional drop shadow matching 3D angle
+            let shadowX = CGFloat(-yaw * 1.5) * CGFloat(tiltRatio)
+            let shadowY = CGFloat(12.0 + (pitch * 1.2) * tiltRatio)
             contentLayer.shadowOffset = CGSize(width: shadowX, height: shadowY)
-            contentLayer.shadowOpacity = Float(min(0.85, 0.55 + (scale - 1.0) * 0.15))
-            contentLayer.shadowRadius = CGFloat(shadowRadius * (1.2 + (scale - 1.0) * 0.55))
+            contentLayer.shadowOpacity = Float(0.45 + (tiltRatio * 0.20))
+            contentLayer.shadowRadius = CGFloat(shadowRadius + (tiltRatio * 12.0))
         } else {
             lightingLayer.opacity = 0.0
             contentLayer.shadowOffset = CGSize(width: 0, height: 12)

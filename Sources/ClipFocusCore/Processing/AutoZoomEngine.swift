@@ -446,16 +446,16 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let currentY = 0.5 + (liveTargetFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
                 
-                let targetAngles = is3D ? kf.tiltPreset.angles(
-                    focusPoint: currentFocus,
+                let destAngles = is3D ? kf.tiltPreset.angles(
+                    focusPoint: liveTargetFocus,
                     customPitch: kf.customPitch,
                     customYaw: kf.customYaw,
                     customRoll: kf.customRoll
                 ) : (pitch: 0.0, yaw: 0.0, roll: 0.0)
                 
-                let currentPitch = targetAngles.pitch * eased
-                let currentYaw = targetAngles.yaw * eased
-                let currentRoll = targetAngles.roll * eased
+                let currentPitch = destAngles.pitch * eased
+                let currentYaw = destAngles.yaw * eased
+                let currentRoll = destAngles.roll * eased
                 let curPosX = kf.positionOffsetX * CGFloat(eased)
                 let curPosY = kf.positionOffsetY * CGFloat(eased)
                 
@@ -559,16 +559,16 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let currentY = liveHoldFocus.y - (liveHoldFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
                 
-                let fullAngles = is3D ? kf.tiltPreset.angles(
-                    focusPoint: currentFocus,
+                let startAngles = is3D ? kf.tiltPreset.angles(
+                    focusPoint: liveHoldFocus,
                     customPitch: kf.customPitch,
                     customYaw: kf.customYaw,
                     customRoll: kf.customRoll
                 ) : (pitch: 0.0, yaw: 0.0, roll: 0.0)
                 
-                let currentPitch = fullAngles.pitch * (1.0 - eased)
-                let currentYaw = fullAngles.yaw * (1.0 - eased)
-                let currentRoll = fullAngles.roll * (1.0 - eased)
+                let currentPitch = startAngles.pitch * (1.0 - eased)
+                let currentYaw = startAngles.yaw * (1.0 - eased)
+                let currentRoll = startAngles.roll * (1.0 - eased)
                 let curPosX = kf.positionOffsetX * CGFloat(1.0 - eased)
                 let curPosY = kf.positionOffsetY * CGFloat(1.0 - eased)
                 

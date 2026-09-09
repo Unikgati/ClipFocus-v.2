@@ -147,20 +147,36 @@ public final class AppState: @unchecked Sendable {
         evaluateCurrentZoom()
     }
     
+    /// Returns the index of the actively selected zoom keyframe, if any (Pure read-only)
+    public func selectedKeyframeIndex() -> Int? {
+        if let id = selectedKeyframeID, let idx = zoomKeyframes.firstIndex(where: { $0.id == id }) {
+            return idx
+        }
+        if let idx = zoomKeyframes.firstIndex(where: { currentTime >= $0.startTime && currentTime < ($0.startTime + $0.duration) }) {
+            return idx
+        }
+        if zoomKeyframes.count == 1 {
+            return 0
+        }
+        if let nearest = zoomKeyframes.min(by: { abs($0.startTime - currentTime) < abs($1.startTime - currentTime) }),
+           let idx = zoomKeyframes.firstIndex(where: { $0.id == nearest.id }) {
+            return idx
+        }
+        return nil
+    }
+
     // Zoom scale of the currently selected keyframe or default (1.0x to 4.0x)
     public var activeZoomScale: CGFloat {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.scale
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].scale
             }
             return defaultZoomScale
         }
         set {
             let clamped = max(1.0, min(4.0, newValue))
             defaultZoomScale = clamped
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].scale = clamped
             }
             evaluateCurrentZoom()
@@ -169,16 +185,14 @@ public final class AppState: @unchecked Sendable {
     
     public var activeEffectType: ZoomEffectType {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.effectType
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].effectType
             }
             return selectedEffectType
         }
         set {
             selectedEffectType = newValue
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].effectType = newValue
                 if newValue == .zoom2D {
                     zoomKeyframes[idx].tiltPreset = .flat
@@ -196,16 +210,14 @@ public final class AppState: @unchecked Sendable {
     
     public var activeTiltPreset: TiltPreset {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.tiltPreset
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].tiltPreset
             }
             return selectedTiltPreset
         }
         set {
             selectedTiltPreset = newValue
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].tiltPreset = newValue
                 if newValue == .custom {
                     zoomKeyframes[idx].effectType = .motion3D
@@ -238,17 +250,15 @@ public final class AppState: @unchecked Sendable {
     // Custom 3D Rotation active computed properties
     public var activeCustomPitch: Double {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.customPitch
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].customPitch
             }
             return customPitch
         }
         set {
             customPitch = newValue
             selectedTiltPreset = .custom
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].customPitch = newValue
                 zoomKeyframes[idx].tiltPreset = .custom
                 zoomKeyframes[idx].effectType = .motion3D
@@ -259,17 +269,15 @@ public final class AppState: @unchecked Sendable {
     
     public var activeCustomYaw: Double {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.customYaw
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].customYaw
             }
             return customYaw
         }
         set {
             customYaw = newValue
             selectedTiltPreset = .custom
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].customYaw = newValue
                 zoomKeyframes[idx].tiltPreset = .custom
                 zoomKeyframes[idx].effectType = .motion3D
@@ -280,17 +288,15 @@ public final class AppState: @unchecked Sendable {
     
     public var activeCustomRoll: Double {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.customRoll
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].customRoll
             }
             return customRoll
         }
         set {
             customRoll = newValue
             selectedTiltPreset = .custom
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].customRoll = newValue
                 zoomKeyframes[idx].tiltPreset = .custom
                 zoomKeyframes[idx].effectType = .motion3D
@@ -301,16 +307,14 @@ public final class AppState: @unchecked Sendable {
     
     public var activePositionX: CGFloat {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.positionOffsetX
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].positionOffsetX
             }
             return positionOffsetX
         }
         set {
             positionOffsetX = newValue
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].positionOffsetX = newValue
             }
             evaluateCurrentZoom()
@@ -319,16 +323,14 @@ public final class AppState: @unchecked Sendable {
     
     public var activePositionY: CGFloat {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.positionOffsetY
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].positionOffsetY
             }
             return positionOffsetY
         }
         set {
             positionOffsetY = newValue
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].positionOffsetY = newValue
             }
             evaluateCurrentZoom()
@@ -337,16 +339,14 @@ public final class AppState: @unchecked Sendable {
     
     public var activeDuration: Double {
         get {
-            if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
-                return kf.duration
+            if let idx = selectedKeyframeIndex() {
+                return zoomKeyframes[idx].duration
             }
             return 2.5
         }
         set {
             let clamped = max(0.5, min(totalDuration, newValue))
-            let targetIdx = selectedKeyframeID != nil ? zoomKeyframes.firstIndex(where: { $0.id == selectedKeyframeID }) : (zoomKeyframes.isEmpty ? nil : 0)
-            if let idx = targetIdx {
-                selectedKeyframeID = zoomKeyframes[idx].id
+            if let idx = selectedKeyframeIndex() {
                 zoomKeyframes[idx].duration = clamped
             }
             evaluateCurrentZoom()
@@ -1798,8 +1798,9 @@ public final class AppState: @unchecked Sendable {
             self.currentPositionX = viewport.positionOffsetX
             self.currentPositionY = viewport.positionOffsetY
             self.currentIs3D = viewport.is3D
-        } else if let id = selectedKeyframeID, let kf = zoomKeyframes.first(where: { $0.id == id }) {
+        } else if let idx = selectedKeyframeIndex() {
             // Paused with a keyframe selected: reflect that keyframe's live values & 3D angles immediately
+            let kf = zoomKeyframes[idx]
             let is3D = kf.effectType == .motion3D
             let angles = is3D ? kf.resolvedAngles : (pitch: 0.0, yaw: 0.0, roll: 0.0)
             self.currentZoomScale = kf.scale

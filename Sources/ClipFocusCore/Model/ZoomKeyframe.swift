@@ -39,17 +39,29 @@ public enum TiltPreset: String, CaseIterable, Codable, Sendable, Equatable {
         case .flat:
             return (pitch: 0.0, yaw: 0.0, roll: 0.0)
         case .auto:
-            // Dynamic FocuSee 3D: clean, natural perspective angles following focus direction
+            // Dynamic FocuSee / Screen Studio 3D: continuous natural perspective angles
             let dx = focusPoint.x - 0.5
             let dy = focusPoint.y - 0.5
-            if abs(dx) < 0.05 && abs(dy) < 0.05 {
-                return (pitch: -7.0, yaw: 8.5, roll: -2.0)
-            } else {
-                let pitch = dy * -28.0
-                let yaw = dx * 32.0
-                let roll = (dx * dy) * -16.0
-                return (pitch: pitch, yaw: yaw, roll: roll)
-            }
+            let dist = hypot(dx, dy)
+            
+            // Directional dynamic angles: tilts card so focused area faces camera naturally
+            let targetPitch = max(-20.0, min(20.0, dy * -26.0))
+            let targetYaw = max(-24.0, min(24.0, dx * 28.0))
+            let targetRoll = max(-6.0, min(6.0, (dx * dy) * -10.0))
+            
+            // Subtle aesthetic center tilt (-4.5° pitch, 6.0° yaw) for dead-center zooms
+            let centerPitch = -4.5
+            let centerYaw = 6.0
+            let centerRoll = 0.0
+            
+            // Smooth Hermite blend factor (3t^2 - 2t^3) over 0.0 to 0.22 distance
+            let t = max(0.0, min(1.0, dist / 0.22))
+            let smoothT = t * t * (3.0 - 2.0 * t)
+            
+            let pitch = centerPitch + (targetPitch - centerPitch) * smoothT
+            let yaw = centerYaw + (targetYaw - centerYaw) * smoothT
+            let roll = centerRoll + (targetRoll - centerRoll) * smoothT
+            return (pitch: pitch, yaw: yaw, roll: roll)
         case .custom:
             return (pitch: customPitch, yaw: customYaw, roll: customRoll)
         }
