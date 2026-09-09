@@ -681,6 +681,9 @@ public final class AppState: @unchecked Sendable {
                   let track = audioTracks.first else {
                 await MainActor.run {
                     self.audioWaveformSamples = []
+                    if self.audioSegments.count <= 1 {
+                        self.audioSegments = []
+                    }
                 }
                 return
             }
@@ -725,19 +728,27 @@ public final class AppState: @unchecked Sendable {
                     }
                 }
                 
-                let targetSampleCount = 120
+                let dur = self.totalDuration > 0.5 ? self.totalDuration : (Double(rawAmplitudes.count) * 0.02)
+                let targetSampleCount = max(600, min(2400, Int(dur * 50)))
                 var condensed: [Float] = []
                 if !rawAmplitudes.isEmpty {
-                    let bucketSize = max(1, rawAmplitudes.count / targetSampleCount)
+                    let bucketSize = max(1.0, Double(rawAmplitudes.count) / Double(targetSampleCount))
                     for i in 0..<targetSampleCount {
-                        let startIdx = i * bucketSize
-                        let endIdx = min(rawAmplitudes.count, startIdx + bucketSize)
-                        if startIdx < rawAmplitudes.count {
+                        let startIdx = Int(Double(i) * bucketSize)
+                        let endIdx = min(rawAmplitudes.count, Int(Double(i + 1) * bucketSize))
+                        if startIdx < rawAmplitudes.count && startIdx < endIdx {
                             let slice = rawAmplitudes[startIdx..<endIdx]
-                            let avg = slice.reduce(0, +) / Float(slice.count)
-                            condensed.append(min(1.0, avg * 3.5 + 0.15))
+                            let peak = slice.max() ?? 0.0
+                            // Strict noise gate: mic hiss and silence below -42 dB (< 0.008) is true 0.0 silence
+                            if peak < 0.008 {
+                                condensed.append(0.0)
+                            } else {
+                                // Perceptual power scale (pow 0.65) for crisp speech dynamics
+                                let scaled = Float(pow(Double(peak), 0.65)) * 1.25
+                                condensed.append(min(1.0, scaled))
+                            }
                         } else {
-                            condensed.append(0.15)
+                            condensed.append(0.0)
                         }
                     }
                 }

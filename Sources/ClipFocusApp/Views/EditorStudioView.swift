@@ -1030,25 +1030,80 @@ public struct EditorStudioView: View {
         .frame(height: timelineHeight)
     }
     
-    // MARK: - Dynamic Timeline Ruler
+    // MARK: - Dynamic Timeline Ruler (Clean Modern Ruler matching Gambar 2)
     @ViewBuilder
     private func dynamicRuler(trackWidth: CGFloat) -> some View {
         let dur = max(1.0, appState.totalDuration)
-        let step: Double = dur <= 10 ? 1.0 : (dur <= 30 ? 2.0 : (dur <= 60 ? 5.0 : 10.0))
-        let tickCount = Int(dur / step)
         
-        HStack(spacing: 0) {
-            ForEach(0...tickCount, id: \.self) { i in
-                let sec = Double(i) * step
+        // Adaptive major and minor tick intervals
+        let (majorStep, minorStep): (Double, Double) = {
+            if dur <= 8 {
+                return (1.0, 0.2)
+            } else if dur <= 16 {
+                return (2.0, 0.5)
+            } else if dur <= 75 {
+                return (5.0, 1.0)
+            } else if dur <= 150 {
+                return (10.0, 2.0)
+            } else if dur <= 300 {
+                return (15.0, 5.0)
+            } else if dur <= 600 {
+                return (30.0, 10.0)
+            } else {
+                return (60.0, 15.0)
+            }
+        }()
+        
+        let minorCount = Int(dur / minorStep)
+        let majorCount = Int(dur / majorStep)
+        
+        ZStack(alignment: .topLeading) {
+            // Horizontal baseline ruler line
+            Rectangle()
+                .fill(Color.white.opacity(0.12))
+                .frame(width: trackWidth, height: 1)
+                .offset(x: 10, y: 0)
+            
+            // Minor tick marks (shorter lines in between)
+            ForEach(0...minorCount, id: \.self) { i in
+                let sec = Double(i) * minorStep
+                let rem = sec.truncatingRemainder(dividingBy: majorStep)
+                let isMajor = abs(rem) < 0.001 || abs(rem - majorStep) < 0.001
+                if !isMajor && sec <= dur {
+                    let x = CGFloat(sec / dur) * trackWidth + 10
+                    Rectangle()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(width: 1, height: 3)
+                        .offset(x: x, y: 0)
+                }
+            }
+            
+            // Major tick marks with labels
+            ForEach(0...majorCount, id: \.self) { i in
+                let sec = Double(i) * majorStep
                 if sec <= dur {
-                    Text(formatSeconds(sec))
-                        .font(.system(size: 8.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    if i < tickCount { Spacer() }
+                    let x = CGFloat(sec / dur) * trackWidth + 10
+                    
+                    // Major tick mark
+                    Rectangle()
+                        .fill(Color.white.opacity(0.40))
+                        .frame(width: 1, height: 5)
+                        .offset(x: x, y: 0)
+                    
+                    // Text label (e.g. 5s, 10s, 15s)
+                    if sec > 0.05 && (x + 12) <= (trackWidth + 16) {
+                        Text(formatRulerTime(sec))
+                            .font(.system(size: 8.5, weight: .regular))
+                            .foregroundStyle(Color.white.opacity(0.45))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .frame(width: 36)
+                            .offset(x: x - 18, y: 6)
+                    }
                 }
             }
         }
-        .padding(.horizontal, 10)
+        .frame(width: trackWidth + 20, height: 18)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -1091,11 +1146,19 @@ public struct EditorStudioView: View {
         }
     }
     
-    // Helper time formats
-    private func formatSeconds(_ seconds: Double) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%02d:%02d", mins, secs)
+    private func formatRulerTime(_ seconds: Double) -> String {
+        let totalSec = Int(round(seconds))
+        if totalSec < 60 {
+            return "\(totalSec)s"
+        } else {
+            let mins = totalSec / 60
+            let remainder = totalSec % 60
+            if remainder == 0 {
+                return "\(mins)m"
+            } else {
+                return "\(mins)m \(remainder)s"
+            }
+        }
     }
     
     private func formatTimeWithMillis(_ seconds: Double) -> String {
@@ -1392,45 +1455,64 @@ struct AudioClipTimelineItemView: View {
                         .stroke(isSelected ? Color.white : Color(red: 0.20, green: 0.85, blue: 0.65).opacity(0.35), lineWidth: isSelected ? 1.5 : 0.8)
                 )
             
-            // Waveform Visualizer Bars mapped to clip's time range
+            // Professional NLE Audio Waveform Visualizer (Hardware-Accelerated Canvas)
             GeometryReader { geo in
-                let w = geo.size.width
-                let h = geo.size.height
                 let samples = appState.audioWaveformSamples
                 
-                HStack(spacing: 2) {
-                    if samples.isEmpty {
-                        ForEach(0..<Int(max(5, w / 5)), id: \.self) { idx in
-                            let phase = Double(idx) * 0.25
-                            let s1 = sin(phase)
-                            let s2 = sin(phase * 0.7)
-                            let ampVal = 0.20 + 0.35 * s1 * s2
-                            let amp = CGFloat(ampVal)
-                            RoundedRectangle(cornerRadius: 1)
-                                .fill(Color(red: 0.20, green: 0.85, blue: 0.65).opacity(isMuted ? 0.20 : 0.60))
-                                .frame(width: 2, height: max(3, h * amp))
-                        }
-                    } else {
-                        // Subsample corresponding to source range
-                        let totalSamples = samples.count
-                        let startFraction = currentSeg.sourceStartTime / max(0.1, appState.totalDuration)
-                        let endFraction = (currentSeg.sourceStartTime + currentSeg.duration) / max(0.1, appState.totalDuration)
-                        let startIdx = Int(max(0, min(Double(totalSamples - 1), startFraction * Double(totalSamples))))
-                        let endIdx = Int(max(Double(startIdx + 1), min(Double(totalSamples), endFraction * Double(totalSamples))))
-                        let slice = Array(samples[startIdx..<endIdx])
-                        
-                        ForEach(0..<slice.count, id: \.self) { idx in
-                            let amp = CGFloat(slice[idx])
-                            RoundedRectangle(cornerRadius: 1)
-                                .fill(Color(red: 0.20, green: 0.85, blue: 0.65).opacity(isMuted ? 0.20 : 0.80))
-                                .frame(width: max(1.5, (w / CGFloat(max(1, slice.count))) - 2), height: max(3, h * amp))
+                Canvas { context, size in
+                    let midY = size.height / 2.0
+                    
+                    // 1. Center baseline hairline for true silence across entire clip
+                    var baselinePath = Path()
+                    baselinePath.move(to: CGPoint(x: 0, y: midY))
+                    baselinePath.addLine(to: CGPoint(x: size.width, y: midY))
+                    context.stroke(
+                        baselinePath,
+                        with: .color(Color(red: 0.20, green: 0.85, blue: 0.65).opacity(isMuted ? 0.15 : 0.35)),
+                        lineWidth: 1.0
+                    )
+                    
+                    guard !samples.isEmpty else { return }
+                    
+                    // 2. Subsample corresponding to clip's source range
+                    let totalSamples = samples.count
+                    let startFraction = currentSeg.sourceStartTime / max(0.1, appState.totalDuration)
+                    let endFraction = (currentSeg.sourceStartTime + currentSeg.duration) / max(0.1, appState.totalDuration)
+                    let startIdx = Int(max(0, min(Double(totalSamples - 1), startFraction * Double(totalSamples))))
+                    let endIdx = Int(max(Double(startIdx + 1), min(Double(totalSamples), endFraction * Double(totalSamples))))
+                    let slice = Array(samples[startIdx..<endIdx])
+                    
+                    guard slice.count > 0 else { return }
+                    
+                    // Calculate step and bar width for clean NLE rendering
+                    let count = slice.count
+                    let availableW = max(1.0, size.width)
+                    let step = max(1.2, availableW / CGFloat(count))
+                    let barWidth = max(1.0, min(2.5, step - 0.4))
+                    let maxAmpHeight = (size.height / 2.0) - 2.0
+                    
+                    var wavePath = Path()
+                    for idx in 0..<count {
+                        let amp = CGFloat(slice[idx])
+                        if amp > 0.015 {
+                            let x = CGFloat(idx) * step
+                            let peakH = max(1.2, amp * maxAmpHeight)
+                            let barRect = CGRect(
+                                x: x,
+                                y: midY - peakH,
+                                width: barWidth,
+                                height: peakH * 2.0
+                            )
+                            wavePath.addRoundedRect(in: barRect, cornerSize: CGSize(width: 0.8, height: 0.8))
                         }
                     }
+                    
+                    let waveColor = Color(red: 0.22, green: 0.88, blue: 0.68).opacity(isMuted ? 0.25 : 0.88)
+                    context.fill(wavePath, with: .color(waveColor))
                 }
-                .frame(width: w, height: h, alignment: .center)
+                .padding(.horizontal, 8)
+                .allowsHitTesting(false)
             }
-            .padding(.horizontal, 8)
-            .allowsHitTesting(false)
             
             // 3-Zone Interactive Layout
             HStack(spacing: 0) {
