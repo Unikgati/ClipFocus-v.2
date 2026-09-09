@@ -441,13 +441,14 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let eased = easyEaseInOut(progress)
                 
                 let currentScale = 1.0 + (kf.scale - 1.0) * CGFloat(eased)
-                let liveTargetFocus = smoothCameraFocus(at: time, from: validEvents, basePoint: kf.focusPoint, scale: currentScale)
-                let currentX = 0.5 + (liveTargetFocus.x - 0.5) * CGFloat(eased)
-                let currentY = 0.5 + (liveTargetFocus.y - 0.5) * CGFloat(eased)
+                // Target destination anchor at zoom landing point (fixed anchor eliminates jitter/wobble during zoom-in transition)
+                let targetFocus = smoothCameraFocus(at: zoomInEnd, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let currentX = 0.5 + (targetFocus.x - 0.5) * CGFloat(eased)
+                let currentY = 0.5 + (targetFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
                 
                 let destAngles = is3D ? kf.tiltPreset.angles(
-                    focusPoint: liveTargetFocus,
+                    focusPoint: targetFocus,
                     customPitch: kf.customPitch,
                     customYaw: kf.customYaw,
                     customRoll: kf.customRoll
@@ -553,14 +554,15 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let progress = (time - zoomOutStart) / max(0.001, transOut)
                 let eased = easyEaseInOut(progress)
                 let currentScale = kf.scale - (kf.scale - 1.0) * CGFloat(eased)
-                let liveHoldFocus = smoothCameraFocus(at: time, from: validEvents, basePoint: kf.focusPoint, scale: currentScale)
+                // Origin anchor at start of zoom-out (fixed anchor eliminates wobble during departure)
+                let startFocus = smoothCameraFocus(at: zoomOutStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 
-                let currentX = liveHoldFocus.x - (liveHoldFocus.x - 0.5) * CGFloat(eased)
-                let currentY = liveHoldFocus.y - (liveHoldFocus.y - 0.5) * CGFloat(eased)
+                let currentX = startFocus.x - (startFocus.x - 0.5) * CGFloat(eased)
+                let currentY = startFocus.y - (startFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
                 
                 let startAngles = is3D ? kf.tiltPreset.angles(
-                    focusPoint: liveHoldFocus,
+                    focusPoint: startFocus,
                     customPitch: kf.customPitch,
                     customYaw: kf.customYaw,
                     customRoll: kf.customRoll

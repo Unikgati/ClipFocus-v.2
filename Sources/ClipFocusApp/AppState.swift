@@ -702,11 +702,19 @@ public final class AppState: @unchecked Sendable {
                 reader.add(trackOutput)
                 reader.startReading()
                 
-                var rawAmplitudes: [Float] = []
+                let assetDur = (try? await asset.load(.duration).seconds) ?? self.totalDuration
+                let dur = assetDur > 0.1 ? assetDur : max(1.0, self.totalDuration)
+                let targetSampleCount = max(600, min(2400, Int(dur * 50)))
+                var buckets = [Float](repeating: 0.0, count: targetSampleCount)
+                
                 while reader.status == .reading {
                     if let sampleBuffer = trackOutput.copyNextSampleBuffer(),
                        let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
+                        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+                        let bDur = CMSampleBufferGetDuration(sampleBuffer).seconds
                         let length = CMBlockBufferGetDataLength(blockBuffer)
+                        let numSamples = length / 2
+                        
                         var data = Data(count: length)
                         data.withUnsafeMutableBytes { bytes in
                             if let base = bytes.baseAddress {
@@ -714,42 +722,41 @@ public final class AppState: @unchecked Sendable {
                             }
                         }
                         data.withUnsafeBytes { (int16Ptr: UnsafeRawBufferPointer) in
-                            let count = length / 2
                             let buffer = int16Ptr.bindMemory(to: Int16.self)
-                            var maxAmp: Float = 0
-                            for idx in stride(from: 0, to: count, by: 16) {
-                                let amp = abs(Float(buffer[idx])) / 32768.0
-                                if amp > maxAmp { maxAmp = amp }
+                            let chunkSize = 128
+                            for chunkStart in stride(from: 0, to: numSamples, by: chunkSize) {
+                                let chunkEnd = min(numSamples, chunkStart + chunkSize)
+                                var maxAmp: Float = 0
+                                for idx in stride(from: chunkStart, to: chunkEnd, by: 4) {
+                                    let amp = abs(Float(buffer[idx])) / 32768.0
+                                    if amp > maxAmp { maxAmp = amp }
+                                }
+                                
+                                let frac = Double(chunkStart) / Double(max(1, numSamples))
+                                let t = pts + (frac * bDur)
+                                let bucketIdx = Int((t / dur) * Double(targetSampleCount))
+                                if bucketIdx >= 0 && bucketIdx < targetSampleCount {
+                                    if maxAmp > buckets[bucketIdx] {
+                                        buckets[bucketIdx] = maxAmp
+                                    }
+                                }
                             }
-                            rawAmplitudes.append(maxAmp)
                         }
                     } else {
                         break
                     }
                 }
                 
-                let dur = self.totalDuration > 0.5 ? self.totalDuration : (Double(rawAmplitudes.count) * 0.02)
-                let targetSampleCount = max(600, min(2400, Int(dur * 50)))
-                var condensed: [Float] = []
-                if !rawAmplitudes.isEmpty {
-                    let bucketSize = max(1.0, Double(rawAmplitudes.count) / Double(targetSampleCount))
-                    for i in 0..<targetSampleCount {
-                        let startIdx = Int(Double(i) * bucketSize)
-                        let endIdx = min(rawAmplitudes.count, Int(Double(i + 1) * bucketSize))
-                        if startIdx < rawAmplitudes.count && startIdx < endIdx {
-                            let slice = rawAmplitudes[startIdx..<endIdx]
-                            let peak = slice.max() ?? 0.0
-                            // Strict noise gate: mic hiss and silence below -42 dB (< 0.008) is true 0.0 silence
-                            if peak < 0.008 {
-                                condensed.append(0.0)
-                            } else {
-                                // Perceptual power scale (pow 0.65) for crisp speech dynamics
-                                let scaled = Float(pow(Double(peak), 0.65)) * 1.25
-                                condensed.append(min(1.0, scaled))
-                            }
-                        } else {
-                            condensed.append(0.0)
-                        }
+                var condensed = [Float](repeating: 0.0, count: targetSampleCount)
+                for i in 0..<targetSampleCount {
+                    let peak = buckets[i]
+                    // Strict noise gate: mic hiss and room floor below -42 dB (< 0.008) is true 0.0 silence
+                    if peak < 0.008 {
+                        condensed[i] = 0.0
+                    } else {
+                        // Perceptual power scale (pow 0.65) for crisp speech dynamics
+                        let scaled = Float(pow(Double(peak), 0.65)) * 1.25
+                        condensed[i] = min(1.0, scaled)
                     }
                 }
                 
