@@ -1789,9 +1789,10 @@ public final class AppState: @unchecked Sendable {
             self.currentRoll = viewport.roll * tiltIntensity
             self.currentPositionX = viewport.positionOffsetX
             self.currentPositionY = viewport.positionOffsetY
-            self.currentIs3D = viewport.is3D
-        } else if let idx = selectedKeyframeIndex() {
-            // Paused with a keyframe selected: reflect that keyframe's live values & 3D angles immediately
+        } else if let idx = selectedKeyframeIndex(),
+                   currentTime >= (zoomKeyframes[idx].startTime - 0.05) &&
+                   currentTime <= (zoomKeyframes[idx].startTime + zoomKeyframes[idx].duration + 0.05) {
+            // Paused with playhead INSIDE the selected keyframe: reflect that keyframe's live values & 3D angles immediately
             let kf = zoomKeyframes[idx]
             let is3D = kf.effectType == .motion3D
             let angles = is3D ? kf.resolvedAngles : (pitch: 0.0, yaw: 0.0, roll: 0.0)
