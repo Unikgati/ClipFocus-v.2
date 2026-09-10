@@ -1443,6 +1443,123 @@ public final class AppState: @unchecked Sendable {
         syncPlaybackToCurrentTime(accurate: true)
     }
     
+    // MARK: - Magnetic Snapping Engine (Production-Grade NLE Magnet)
+    public var activeSnapLineTime: Double? = nil
+    public var dragAnchorPlayheadTime: Double? = nil
+    
+    public func startDragOperation() {
+        if dragAnchorPlayheadTime == nil {
+            dragAnchorPlayheadTime = currentTime
+        }
+    }
+    
+    public func endDragOperation() {
+        activeSnapLineTime = nil
+        dragAnchorPlayheadTime = nil
+    }
+    
+    public func snapTime(
+        _ candidateTime: Double,
+        trackWidth: CGFloat,
+        thresholdPixels: CGFloat = 5.0,
+        includePlayhead: Bool = false,
+        excludeID: UUID? = nil
+    ) -> (snappedTime: Double, didSnap: Bool) {
+        guard isSnappingEnabled, trackWidth > 10, totalDuration > 0 else {
+            return (candidateTime, false)
+        }
+        
+        let thresholdSec = Double(thresholdPixels / trackWidth) * totalDuration
+        var candidateSnapPoints: [Double] = [0.0, totalDuration]
+        
+        if includePlayhead {
+            // Anchor to the stationary playhead where the user parked the scrubber
+            let playheadTarget = dragAnchorPlayheadTime ?? currentTime
+            candidateSnapPoints.append(playheadTarget)
+        }
+        
+        for kf in zoomKeyframes where kf.id != excludeID {
+            candidateSnapPoints.append(kf.startTime)
+            candidateSnapPoints.append(kf.startTime + kf.duration)
+        }
+        
+        for seg in videoSegments where seg.id != excludeID {
+            candidateSnapPoints.append(seg.timelineStartTime)
+            candidateSnapPoints.append(seg.timelineEndTime)
+        }
+        
+        for seg in audioSegments where seg.id != excludeID {
+            candidateSnapPoints.append(seg.timelineStartTime)
+            candidateSnapPoints.append(seg.timelineEndTime)
+        }
+        
+        var closestTarget: Double? = nil
+        var minDiff: Double = thresholdSec
+        
+        for pt in candidateSnapPoints {
+            let diff = abs(pt - candidateTime)
+            if diff <= minDiff {
+                minDiff = diff
+                closestTarget = pt
+            }
+        }
+        
+        if let target = closestTarget {
+            if abs(target - (activeSnapLineTime ?? -999)) > 0.001 {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            }
+            activeSnapLineTime = target
+            return (target, true)
+        } else {
+            activeSnapLineTime = nil
+            return (candidateTime, false)
+        }
+    }
+    
+    public func snapBlockMovement(
+        candidateStart: Double,
+        duration: Double,
+        trackWidth: CGFloat,
+        thresholdPixels: CGFloat = 5.0,
+        excludeID: UUID? = nil
+    ) -> Double {
+        guard isSnappingEnabled, trackWidth > 10, totalDuration > 0 else {
+            return candidateStart
+        }
+        
+        // 1. Try snapping the leading edge (strictly block-to-block, no ghost playhead snap)
+        let (snappedStart, snappedLeading) = snapTime(
+            candidateStart,
+            trackWidth: trackWidth,
+            thresholdPixels: thresholdPixels,
+            includePlayhead: false,
+            excludeID: excludeID
+        )
+        if snappedLeading {
+            return snappedStart
+        }
+        
+        // 2. Try snapping the trailing edge (strictly block-to-block, no ghost playhead snap)
+        let candidateEnd = candidateStart + duration
+        let (snappedEnd, snappedTrailing) = snapTime(
+            candidateEnd,
+            trackWidth: trackWidth,
+            thresholdPixels: thresholdPixels,
+            includePlayhead: false,
+            excludeID: excludeID
+        )
+        if snappedTrailing {
+            return max(0, snappedEnd - duration)
+        }
+        
+        activeSnapLineTime = nil
+        return candidateStart
+    }
+    
+    public func clearActiveSnapLine() {
+        activeSnapLineTime = nil
+    }
+    
     public func selectSegment(id: UUID, trackType: TimelineTrackType, isAdd: Bool = false, isRange: Bool = false) {
         selectedKeyframeIDs.removeAll()
         selectedTrackType = trackType

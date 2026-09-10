@@ -153,11 +153,15 @@ public struct EditorStudioView: View {
                             appState.openProjectDialog()
                             return nil
                         }
-                    case 45: // N key with Cmd (Cmd+N = New Project)
+                    case 45: // N key -> Cmd+N: New Project | N: Toggle Snapping (NLE Standard)
                         if event.modifierFlags.contains(.command) {
                             appState.newProject()
-                            return nil
+                        } else {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.isSnappingEnabled.toggle()
+                            }
                         }
+                        return nil
                     case 11: // B key with Cmd (Cmd+B) -> Razor Cut / Split at Playhead
                         if event.modifierFlags.contains(.command) {
                             appState.splitAtCurrentTime()
@@ -856,6 +860,21 @@ public struct EditorStudioView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Toggle Rule of Thirds Grid (⌘G)")
+                    
+                    // Magnetic Snapping Toggle
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            appState.isSnappingEnabled.toggle()
+                        }
+                    }) {
+                        MagnetIcon(isActive: appState.isSnappingEnabled)
+                            .frame(width: 24, height: 24)
+                            .background(appState.isSnappingEnabled ? Color.yellow.opacity(0.18) : Color.white.opacity(0.04))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Toggle Magnetic Snapping (N)")
                 }
                 
                 Spacer()
@@ -1359,6 +1378,19 @@ public struct EditorStudioView: View {
                                 .allowsHitTesting(false)
                         }
                         
+                        // Active Magnetic Snapping Visual Guide Line (Cyan glow line)
+                        if let snapSec = appState.activeSnapLineTime {
+                            let snapRatio = max(0.0, min(1.0, snapSec / totalDur))
+                            let snapX = CGFloat(snapRatio) * trackWidth + 10
+                            Rectangle()
+                                .fill(Color.cyan)
+                                .frame(width: 1.5)
+                                .frame(maxHeight: .infinity)
+                                .shadow(color: Color.cyan.opacity(0.85), radius: 3)
+                                .offset(x: snapX)
+                                .allowsHitTesting(false)
+                        }
+                        
                         // Main Playhead (Orange/Yellow Master Current Time Anchor spanning full track height)
                         let playheadRatio = max(0.0, min(1.0, appState.currentTime / totalDur))
                         let playheadX = CGFloat(playheadRatio) * trackWidth + 10
@@ -1495,11 +1527,15 @@ public struct EditorStudioView: View {
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     appState.isScrubbing = true
+                    appState.startDragOperation()
                     let ratio = max(0.0, min(1.0, (value.location.x - 10) / trackWidth))
-                    appState.seek(to: Double(ratio) * appState.totalDuration)
+                    let rawSec = Double(ratio) * appState.totalDuration
+                    let (snappedSec, _) = appState.snapTime(rawSec, trackWidth: trackWidth, thresholdPixels: 5.0, includePlayhead: false)
+                    appState.seek(to: snappedSec)
                 }
                 .onEnded { _ in
                     appState.isScrubbing = false
+                    appState.endDragOperation()
                 }
         )
     }
@@ -1700,14 +1736,16 @@ struct VideoClipTimelineItemView: View {
                                     }
                                     if dragStart_StartSec == nil {
                                         appState.recordUndoState()
+                                        appState.startDragOperation()
                                         dragStart_StartSec = currentSeg.timelineStartTime
                                         dragStart_DurSec = currentSeg.duration
                                     }
                                     if let initStart = dragStart_StartSec {
                                         let deltaX = value.location.x - value.startLocation.x
                                         let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                        let newStart = initStart + deltaSec
-                                        appState.trimSegmentStart(id: currentSeg.id, trackType: .video, newTimelineStart: newStart)
+                                        let rawStart = initStart + deltaSec
+                                        let (snappedStart, _) = appState.snapTime(rawStart, trackWidth: trackWidth, excludeID: currentSeg.id)
+                                        appState.trimSegmentStart(id: currentSeg.id, trackType: .video, newTimelineStart: snappedStart)
                                         appState.seek(to: currentSeg.timelineStartTime, accurate: false)
                                     }
                                 }
@@ -1715,6 +1753,8 @@ struct VideoClipTimelineItemView: View {
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
+                                    appState.endDragOperation()
+                                    appState.clearActiveSnapLine()
                                     appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
@@ -1763,12 +1803,19 @@ struct VideoClipTimelineItemView: View {
                             appState.selectSegment(id: currentSeg.id, trackType: .video)
                             if dragStart_StartSec == nil {
                                 appState.recordUndoState()
+                                appState.startDragOperation()
                                 dragStart_StartSec = currentSeg.timelineStartTime
                             }
                             if let initStart = dragStart_StartSec {
                                 let deltaX = value.location.x - value.startLocation.x
                                 let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                let newStart = initStart + deltaSec
+                                let rawStart = initStart + deltaSec
+                                let newStart = appState.snapBlockMovement(
+                                    candidateStart: rawStart,
+                                    duration: currentSeg.duration,
+                                    trackWidth: trackWidth,
+                                    excludeID: currentSeg.id
+                                )
                                 appState.moveSegment(id: currentSeg.id, trackType: .video, newTimelineStart: newStart)
                                 appState.seek(to: currentSeg.timelineStartTime, accurate: false)
                             }
@@ -1776,6 +1823,8 @@ struct VideoClipTimelineItemView: View {
                         .onEnded { _ in
                             appState.isScrubbing = false
                             dragStart_StartSec = nil
+                            appState.endDragOperation()
+                            appState.clearActiveSnapLine()
                             appState.rebuildPlaybackComposition(maintainPlayhead: true)
                         }
                 )
@@ -1798,12 +1847,16 @@ struct VideoClipTimelineItemView: View {
                                     appState.selectSegment(id: currentSeg.id, trackType: .video)
                                     if dragStart_DurSec == nil {
                                         appState.recordUndoState()
+                                        appState.startDragOperation()
                                         dragStart_DurSec = currentSeg.duration
                                     }
                                     if let initDur = dragStart_DurSec {
                                         let deltaX = value.location.x - value.startLocation.x
                                         let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                        let newDur = initDur + deltaSec
+                                        let rawDur = max(0.2, initDur + deltaSec)
+                                        let rawEnd = currentSeg.timelineStartTime + rawDur
+                                        let (snappedEnd, _) = appState.snapTime(rawEnd, trackWidth: trackWidth, excludeID: currentSeg.id)
+                                        let newDur = max(0.2, snappedEnd - currentSeg.timelineStartTime)
                                         appState.trimSegmentEnd(id: currentSeg.id, trackType: .video, newDuration: newDur)
                                         appState.seek(to: currentSeg.timelineEndTime, accurate: false)
                                     }
@@ -1811,6 +1864,8 @@ struct VideoClipTimelineItemView: View {
                                 .onEnded { _ in
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
+                                    appState.endDragOperation()
+                                    appState.clearActiveSnapLine()
                                     appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
@@ -1936,14 +1991,16 @@ struct AudioClipTimelineItemView: View {
                                     }
                                     if dragStart_StartSec == nil {
                                         appState.recordUndoState()
+                                        appState.startDragOperation()
                                         dragStart_StartSec = currentSeg.timelineStartTime
                                         dragStart_DurSec = currentSeg.duration
                                     }
                                     if let initStart = dragStart_StartSec {
                                         let deltaX = value.location.x - value.startLocation.x
                                         let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                        let newStart = initStart + deltaSec
-                                        appState.trimSegmentStart(id: currentSeg.id, trackType: .audio, newTimelineStart: newStart)
+                                        let rawStart = initStart + deltaSec
+                                        let (snappedStart, _) = appState.snapTime(rawStart, trackWidth: trackWidth, excludeID: currentSeg.id)
+                                        appState.trimSegmentStart(id: currentSeg.id, trackType: .audio, newTimelineStart: snappedStart)
                                         appState.seek(to: currentSeg.timelineStartTime, accurate: false)
                                     }
                                 }
@@ -1951,6 +2008,8 @@ struct AudioClipTimelineItemView: View {
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
+                                    appState.endDragOperation()
+                                    appState.clearActiveSnapLine()
                                     appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
@@ -1992,12 +2051,19 @@ struct AudioClipTimelineItemView: View {
                             }
                             if dragStart_StartSec == nil {
                                 appState.recordUndoState()
+                                appState.startDragOperation()
                                 dragStart_StartSec = currentSeg.timelineStartTime
                             }
                             if let initStart = dragStart_StartSec {
                                 let deltaX = value.location.x - value.startLocation.x
                                 let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                let newStart = initStart + deltaSec
+                                let rawStart = initStart + deltaSec
+                                let newStart = appState.snapBlockMovement(
+                                    candidateStart: rawStart,
+                                    duration: currentSeg.duration,
+                                    trackWidth: trackWidth,
+                                    excludeID: currentSeg.id
+                                )
                                 appState.moveSegment(id: currentSeg.id, trackType: .audio, newTimelineStart: newStart)
                                 appState.seek(to: currentSeg.timelineStartTime, accurate: false)
                             }
@@ -2005,6 +2071,8 @@ struct AudioClipTimelineItemView: View {
                         .onEnded { _ in
                             appState.isScrubbing = false
                             dragStart_StartSec = nil
+                            appState.endDragOperation()
+                            appState.clearActiveSnapLine()
                             appState.rebuildPlaybackComposition(maintainPlayhead: true)
                         }
                 )
@@ -2027,12 +2095,16 @@ struct AudioClipTimelineItemView: View {
                                     appState.selectSegment(id: currentSeg.id, trackType: .audio)
                                     if dragStart_DurSec == nil {
                                         appState.recordUndoState()
+                                        appState.startDragOperation()
                                         dragStart_DurSec = currentSeg.duration
                                     }
                                     if let initDur = dragStart_DurSec {
                                         let deltaX = value.location.x - value.startLocation.x
                                         let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                        let newDur = initDur + deltaSec
+                                        let rawDur = max(0.2, initDur + deltaSec)
+                                        let rawEnd = currentSeg.timelineStartTime + rawDur
+                                        let (snappedEnd, _) = appState.snapTime(rawEnd, trackWidth: trackWidth, excludeID: currentSeg.id)
+                                        let newDur = max(0.2, snappedEnd - currentSeg.timelineStartTime)
                                         appState.trimSegmentEnd(id: currentSeg.id, trackType: .audio, newDuration: newDur)
                                         appState.seek(to: currentSeg.timelineEndTime, accurate: false)
                                     }
@@ -2040,6 +2112,8 @@ struct AudioClipTimelineItemView: View {
                                 .onEnded { _ in
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
+                                    appState.endDragOperation()
+                                    appState.clearActiveSnapLine()
                                     appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
@@ -2155,6 +2229,7 @@ struct KeyframeTimelineItemView: View {
                                     }
                                     if dragStart_StartSec == nil {
                                         appState.recordUndoState()
+                                        appState.startDragOperation()
                                         dragStart_StartSec = currentKf.startTime
                                         dragStart_DurSec = currentKf.duration
                                     }
@@ -2162,7 +2237,9 @@ struct KeyframeTimelineItemView: View {
                                         let deltaX = value.location.x - value.startLocation.x
                                         let deltaSec = Double(deltaX / trackWidth) * totalDur
                                         let oldEnd = initStart + initDur
-                                        let newStart = max(0, min(oldEnd - 0.2, initStart + deltaSec))
+                                        let rawStart = max(0, min(oldEnd - 0.2, initStart + deltaSec))
+                                        let (snappedStart, _) = appState.snapTime(rawStart, trackWidth: trackWidth, excludeID: currentKf.id)
+                                        let newStart = min(oldEnd - 0.2, snappedStart)
                                         appState.trimKeyframeStart(id: currentKf.id, newStartTime: newStart)
                                         appState.seek(to: newStart, accurate: false)
                                     }
@@ -2171,6 +2248,8 @@ struct KeyframeTimelineItemView: View {
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
+                                    appState.endDragOperation()
+                                    appState.clearActiveSnapLine()
                                     appState.finalizeKeyframeEdits()
                                 }
                         )
@@ -2213,11 +2292,18 @@ struct KeyframeTimelineItemView: View {
                             appState.isScrubbing = true
                             if dragStart_StartSec == nil {
                                 appState.recordUndoState()
+                                appState.startDragOperation()
                                 dragStart_StartSec = currentKf.startTime
                             }
                             if let initStart = dragStart_StartSec {
                                 let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                let newStart = max(0, min(max(0, totalDur - currentKf.duration), initStart + deltaSec))
+                                let rawStart = max(0, min(max(0, totalDur - currentKf.duration), initStart + deltaSec))
+                                let newStart = appState.snapBlockMovement(
+                                    candidateStart: rawStart,
+                                    duration: currentKf.duration,
+                                    trackWidth: trackWidth,
+                                    excludeID: currentKf.id
+                                )
                                 appState.updateKeyframeStartTime(id: currentKf.id, newStartTime: newStart)
                                 appState.seek(to: newStart, accurate: false)
                             }
@@ -2225,6 +2311,8 @@ struct KeyframeTimelineItemView: View {
                         .onEnded { value in
                             appState.isScrubbing = false
                             dragStart_StartSec = nil
+                            appState.endDragOperation()
+                            appState.clearActiveSnapLine()
                             appState.finalizeKeyframeEdits()
                         }
                 )
@@ -2252,12 +2340,16 @@ struct KeyframeTimelineItemView: View {
                                     }
                                     if dragStart_DurSec == nil {
                                         appState.recordUndoState()
+                                        appState.startDragOperation()
                                         dragStart_DurSec = currentKf.duration
                                     }
                                     if let initDur = dragStart_DurSec {
                                         let deltaX = value.location.x - value.startLocation.x
                                         let deltaSec = Double(deltaX / trackWidth) * totalDur
-                                        let newDur = max(0.2, min(totalDur - currentKf.startTime, initDur + deltaSec))
+                                        let rawDur = max(0.2, min(totalDur - currentKf.startTime, initDur + deltaSec))
+                                        let rawEnd = currentKf.startTime + rawDur
+                                        let (snappedEnd, _) = appState.snapTime(rawEnd, trackWidth: trackWidth, excludeID: currentKf.id)
+                                        let newDur = max(0.2, snappedEnd - currentKf.startTime)
                                         appState.updateKeyframeDuration(id: currentKf.id, newDuration: newDur)
                                         let curEnd = currentKf.startTime + newDur
                                         appState.seek(to: curEnd, accurate: false)
@@ -2266,6 +2358,8 @@ struct KeyframeTimelineItemView: View {
                                 .onEnded { _ in
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
+                                    appState.endDragOperation()
+                                    appState.clearActiveSnapLine()
                                     appState.finalizeKeyframeEdits()
                                 }
                         )
@@ -2552,5 +2646,56 @@ struct RuleOfThirdsOverlay: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Dedicated Precision Magnet Icon (Crisp Vector Horseshoe)
+struct MagnetIcon: View {
+    var isActive: Bool
+    
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            let padX: CGFloat = (w - 13.0) / 2.0
+            let padY: CGFloat = (h - 13.0) / 2.0
+            let mw: CGFloat = 13.0
+            let mh: CGFloat = 13.0
+            let thick: CGFloat = 3.6
+            let r: CGFloat = mw / 2.0
+            
+            var uPath = Path()
+            uPath.move(to: CGPoint(x: padX, y: padY))
+            uPath.addLine(to: CGPoint(x: padX, y: padY + mh - r))
+            uPath.addArc(
+                center: CGPoint(x: padX + r, y: padY + mh - r),
+                radius: r,
+                startAngle: .degrees(180),
+                endAngle: .degrees(0),
+                clockwise: true
+            )
+            uPath.addLine(to: CGPoint(x: padX + mw, y: padY))
+            uPath.addLine(to: CGPoint(x: padX + mw - thick, y: padY))
+            uPath.addLine(to: CGPoint(x: padX + mw - thick, y: padY + mh - r))
+            uPath.addArc(
+                center: CGPoint(x: padX + r, y: padY + mh - r),
+                radius: r - thick,
+                startAngle: .degrees(0),
+                endAngle: .degrees(180),
+                clockwise: false
+            )
+            uPath.addLine(to: CGPoint(x: padX + thick, y: padY))
+            uPath.closeSubpath()
+            
+            let magnetColor = isActive ? Color.yellow : Color.white.opacity(0.4)
+            context.fill(uPath, with: .color(magnetColor))
+            
+            let tipHeight: CGFloat = 3.2
+            let leftTipRect = CGRect(x: padX, y: padY, width: thick, height: tipHeight)
+            let rightTipRect = CGRect(x: padX + mw - thick, y: padY, width: thick, height: tipHeight)
+            let tipColor = isActive ? Color.red.opacity(0.85) : Color.white.opacity(0.65)
+            context.fill(Path(roundedRect: leftTipRect, cornerRadius: 0.5), with: .color(tipColor))
+            context.fill(Path(roundedRect: rightTipRect, cornerRadius: 0.5), with: .color(tipColor))
+        }
     }
 }
