@@ -130,6 +130,13 @@ public struct EditorStudioView: View {
                     case 49: // Spacebar -> Play / Pause
                         appState.togglePlayback()
                         return nil
+                    case 5: // G key with Cmd (Cmd+G) -> Toggle Rule of Thirds Grid
+                        if event.modifierFlags.contains(.command) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                appState.showRuleOfThirds.toggle()
+                            }
+                            return nil
+                        }
                     case 14: // E key with Cmd (Cmd+E) -> Export Video
                         if event.modifierFlags.contains(.command) {
                             appState.exportVideo()
@@ -280,19 +287,9 @@ public struct EditorStudioView: View {
             
             // B. Export Quality & Resolution
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Export Quality")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Text(exportQualityBadge)
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(Color.cyan)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.cyan.opacity(0.12))
-                        .clipShape(Capsule())
-                }
+                Text("Export Quality")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
                 
                 HStack(spacing: 5) {
                     ForEach(["1080p", "2K", "4K", "Auto"], id: \.self) { res in
@@ -407,15 +404,6 @@ public struct EditorStudioView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-    
-    private var exportQualityBadge: String {
-        switch appState.exportResolution {
-        case "4K": return "Ultra HD"
-        case "2K": return "Quad HD"
-        case "Auto": return "Native"
-        default: return "Full HD"
-        }
     }
     
     private var exportQualityDescription: String {
@@ -698,6 +686,13 @@ public struct EditorStudioView: View {
                 .frame(width: artboardSize.width, height: artboardSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .clipped()
+                .overlay(
+                    Group {
+                        if appState.showRuleOfThirds {
+                            RuleOfThirdsOverlay(size: artboardSize)
+                        }
+                    }
+                )
                 .allowsHitTesting(false)
                 .shadow(color: Color.black.opacity(0.45), radius: 18)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: appState.canvasRatio)
@@ -845,18 +840,22 @@ public struct EditorStudioView: View {
                     .buttonStyle(.plain)
                     .help("Add zoom block at playhead")
                     
-                    // Snapping Magnet
+                    // Rule of Thirds Grid Toggle (#)
                     Button(action: {
-                        appState.isSnappingEnabled.toggle()
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            appState.showRuleOfThirds.toggle()
+                        }
                     }) {
-                        Image(systemName: "magnet.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(appState.isSnappingEnabled ? Color.yellow : Color.secondary)
+                        Image(systemName: "number")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(appState.showRuleOfThirds ? Color.cyan : Color.white.opacity(0.85))
                             .frame(width: 24, height: 24)
+                            .background(appState.showRuleOfThirds ? Color.cyan.opacity(0.18) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Toggle Magnet Snapping")
+                    .help("Toggle Rule of Thirds Grid (⌘G)")
                 }
                 
                 Spacer()
@@ -2495,5 +2494,63 @@ func formatSecShort(_ sec: Double) -> String {
         return String(format: "%d:%02d", m, s)
     } else {
         return String(format: "%d.%ds", s, tenths)
+    }
+}
+
+// MARK: - Rule of Thirds Responsive Canvas Overlay
+struct RuleOfThirdsOverlay: View {
+    let size: CGSize
+    
+    var body: some View {
+        Canvas { context, canvasSize in
+            let w = canvasSize.width
+            let h = canvasSize.height
+            guard w > 20 && h > 20 else { return }
+            
+            let x1 = w / 3.0
+            let x2 = w * 2.0 / 3.0
+            let y1 = h / 3.0
+            let y2 = h * 2.0 / 3.0
+            
+            var gridPath = Path()
+            // 2 Vertical lines
+            gridPath.move(to: CGPoint(x: x1, y: 0))
+            gridPath.addLine(to: CGPoint(x: x1, y: h))
+            gridPath.move(to: CGPoint(x: x2, y: 0))
+            gridPath.addLine(to: CGPoint(x: x2, y: h))
+            
+            // 2 Horizontal lines
+            gridPath.move(to: CGPoint(x: 0, y: y1))
+            gridPath.addLine(to: CGPoint(x: w, y: y1))
+            gridPath.move(to: CGPoint(x: 0, y: y2))
+            gridPath.addLine(to: CGPoint(x: w, y: y2))
+            
+            // Subtle black stroke underneath for contrast against light videos
+            context.stroke(gridPath, with: .color(Color.black.opacity(0.4)), style: StrokeStyle(lineWidth: 1.8))
+            // Crisp cyan-tinted dashed guide line
+            context.stroke(gridPath, with: .color(Color.cyan.opacity(0.7)), style: StrokeStyle(lineWidth: 1.0, dash: [5, 4]))
+            
+            // 4 Golden Intersection Power Points
+            let intersections = [
+                CGPoint(x: x1, y: y1),
+                CGPoint(x: x2, y: y1),
+                CGPoint(x: x1, y: y2),
+                CGPoint(x: x2, y: y2)
+            ]
+            
+            for pt in intersections {
+                let outerRing = CGRect(x: pt.x - 7, y: pt.y - 7, width: 14, height: 14)
+                let dropShadowRing = CGRect(x: pt.x - 7.5, y: pt.y - 7.5, width: 15, height: 15)
+                
+                // Shadow
+                context.stroke(Path(ellipseIn: dropShadowRing), with: .color(Color.black.opacity(0.5)), lineWidth: 2.2)
+                // Cyan power point circle
+                context.stroke(Path(ellipseIn: outerRing), with: .color(Color.cyan.opacity(0.9)), lineWidth: 1.5)
+                // Center white focal dot
+                let dotRect = CGRect(x: pt.x - 2, y: pt.y - 2, width: 4, height: 4)
+                context.fill(Path(ellipseIn: dotRect), with: .color(Color.white))
+            }
+        }
+        .allowsHitTesting(false)
     }
 }

@@ -102,6 +102,7 @@ public final class AppState: @unchecked Sendable {
     public var currentProjectCreatedAt: Date? = nil
     public var isDirty: Bool = false
     public var showSaveSuccessToast: Bool = false
+    public var showRuleOfThirds: Bool = false
     public var avPlayer: AVPlayer? = nil
     public var videoAspectRatio: CGFloat = {
         if let screen = NSScreen.main {

@@ -81,43 +81,11 @@ public struct CameraPropertiesSidebarView: View {
     private func activeKeyframeContent(idx: Int) -> some View {
         let kf = appState.zoomKeyframes[idx]
         
-        // 1. Header Title & Multi-Selection Banner
+        // 1. Header Title
         VStack(alignment: .leading, spacing: 8) {
             Text("Zoom & 3D Settings")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white)
-            
-            if appState.selectedKeyframeIDs.count > 1 {
-                HStack(spacing: 8) {
-                    Image(systemName: "square.on.square.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.cyan)
-                    Text("\(appState.selectedKeyframeIDs.count) Blocks Selected")
-                        .font(.system(size: 11.5, weight: .bold))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Button(action: {
-                        appState.deleteSelected()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 10))
-                            Text("Delete")
-                                .font(.system(size: 10.5, weight: .semibold))
-                        }
-                        .foregroundStyle(Color.red.opacity(0.9))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
         }
         
         // 2. Zoom Effect Mode: [ 2D Zoom ]  [ 3D Motion ]
