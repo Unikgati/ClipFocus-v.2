@@ -21,12 +21,6 @@ public struct VideoCompositorConfig: Sendable {
     public var disableZoom: Bool
     public var scaleFactor: CGFloat
     
-    // Custom Vector Cursor Overlay
-    public var isCursorOverlayEnabled: Bool
-    public var cursorScale: CGFloat
-    public var isClickRippleEnabled: Bool
-    public var autoHideIdleCursor: Bool
-    
     public init(
         renderSize: CGSize,
         padding: CGFloat = 20.0,
@@ -38,11 +32,7 @@ public struct VideoCompositorConfig: Sendable {
         telemetryEvents: [TelemetryEvent] = [],
         tiltIntensity: Double = 1.0,
         disableZoom: Bool = false,
-        scaleFactor: CGFloat = 1.0,
-        isCursorOverlayEnabled: Bool = true,
-        cursorScale: CGFloat = 1.35,
-        isClickRippleEnabled: Bool = true,
-        autoHideIdleCursor: Bool = true
+        scaleFactor: CGFloat = 1.0
     ) {
         self.renderSize = renderSize
         self.padding = padding
@@ -55,10 +45,6 @@ public struct VideoCompositorConfig: Sendable {
         self.tiltIntensity = tiltIntensity
         self.disableZoom = disableZoom
         self.scaleFactor = scaleFactor > 0 ? scaleFactor : 1.0
-        self.isCursorOverlayEnabled = isCursorOverlayEnabled
-        self.cursorScale = cursorScale
-        self.isClickRippleEnabled = isClickRippleEnabled
-        self.autoHideIdleCursor = autoHideIdleCursor
     }
 }
 
@@ -205,23 +191,6 @@ public final class VideoCompositorEngine: Sendable {
             let videoTrans = CGAffineTransform(scaleX: baseCardW / srcW, y: baseCardH / srcH)
             let transformedVideo = sourceImage.transformed(by: videoTrans)
             
-            // 4b. Overlay Custom Vector Cursor (Screen Studio / FocuSee style)
-            var videoWithCursor = transformedVideo
-            if config.isCursorOverlayEnabled,
-               let cursorInfo = Self.evaluateCursorState(
-                    at: timeSec,
-                    events: config.telemetryEvents,
-                    autoHideIdle: config.autoHideIdleCursor,
-                    clickRipple: config.isClickRippleEnabled
-               ),
-               let cursorCI = Self.renderCursorOverlayImage(
-                    cursorInfo: cursorInfo,
-                    cardSize: CGSize(width: baseCardW, height: baseCardH),
-                    scale: config.cursorScale * (baseCardW / 850.0)
-               ) {
-                videoWithCursor = cursorCI.composited(over: transformedVideo)
-            }
-            
             // 5. Generate Card Mask with Rounded Corners
             let rectGen = CIFilter(name: "CIRoundedRectangleGenerator")!
             rectGen.setValue(CIVector(cgRect: baseCardRect), forKey: "inputExtent")
@@ -235,7 +204,7 @@ public final class VideoCompositorEngine: Sendable {
             
             // Clip video cleanly inside floating rounded card
             let blend = CIFilter(name: "CIBlendWithMask")!
-            blend.setValue(videoWithCursor, forKey: kCIInputImageKey)
+            blend.setValue(transformedVideo, forKey: kCIInputImageKey)
             blend.setValue(cardMask, forKey: kCIInputMaskImageKey)
             blend.setValue(CIImage.empty(), forKey: kCIInputBackgroundImageKey)
             
@@ -348,125 +317,5 @@ public final class VideoCompositorEngine: Sendable {
         videoComp.renderSize = renderSize
         videoComp.frameDuration = CMTime(value: 1, timescale: 60)
         return videoComp
-    }
-    
-    // MARK: - Cursor Evaluation & Rendering for Offline Video Export
-    
-    public static func evaluateCursorState(
-        at time: Double,
-        events: [TelemetryEvent],
-        autoHideIdle: Bool,
-        clickRipple: Bool
-    ) -> (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double)? {
-        guard !events.isEmpty else { return nil }
-        let mouseEvents = events.filter {
-            $0.type == .mouseMove || $0.type == .mouseClick || $0.type == .mouseDrag
-        }
-        guard !mouseEvents.isEmpty else { return nil }
-        
-        var prevEvent: TelemetryEvent? = nil
-        var nextEvent: TelemetryEvent? = nil
-        
-        for ev in mouseEvents {
-            if ev.timestamp <= time {
-                prevEvent = ev
-            } else {
-                nextEvent = ev
-                break
-            }
-        }
-        
-        guard let prev = prevEvent ?? mouseEvents.first, let pos1 = prev.position else {
-            return nil
-        }
-        
-        var opacity: Double = 1.0
-        let idleThreshold: TimeInterval = 2.0
-        let timeSinceLastMove = time - prev.timestamp
-        if autoHideIdle && timeSinceLastMove > idleThreshold {
-            if let next = nextEvent {
-                let timeUntilNext = next.timestamp - time
-                if timeUntilNext < 0.3 {
-                    opacity = max(0.0, min(1.0, 1.0 - (timeUntilNext / 0.3)))
-                } else {
-                    return nil
-                }
-            } else {
-                return nil
-            }
-        }
-        
-        var finalPos = pos1
-        if let next = nextEvent, let pos2 = next.position {
-            let interval = next.timestamp - prev.timestamp
-            if interval > 0.001 && interval < 0.15 {
-                let factor = (time - prev.timestamp) / interval
-                let clampedFactor = max(0.0, min(1.0, factor))
-                finalPos = CGPoint(
-                    x: pos1.x + (pos2.x - pos1.x) * clampedFactor,
-                    y: pos1.y + (pos2.y - pos1.y) * clampedFactor
-                )
-            }
-        }
-        
-        let type = prev.cursorType ?? .arrow
-        
-        var clickProgress: Double? = nil
-        var isRight = false
-        if let clickEv = events.last(where: {
-            $0.type == .mouseClick && time >= $0.timestamp && time <= ($0.timestamp + 0.35)
-        }) {
-            clickProgress = (time - clickEv.timestamp) / 0.35
-            isRight = (clickEv.button == .right)
-        }
-        
-        return (finalPos, type, clickProgress, isRight, opacity)
-    }
-    
-    public static func renderCursorOverlayImage(
-        cursorInfo: (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double),
-        cardSize: CGSize,
-        scale: CGFloat
-    ) -> CIImage? {
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-        
-        let baseSize: CGFloat = 26.0 * scale
-        let ripplePad: CGFloat = 36.0 * scale
-        let tileSize: CGFloat = max(120.0, (baseSize + ripplePad) * 2.0)
-        let intTile = Int(ceil(tileSize))
-        
-        guard let context = CGContext(
-            data: nil,
-            width: intTile,
-            height: intTile,
-            bitsPerComponent: 8,
-            bytesPerRow: intTile * 4,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo.rawValue
-        ) else { return nil }
-        
-        context.clear(CGRect(x: 0, y: 0, width: intTile, height: intTile))
-        context.saveGState()
-        context.setAlpha(CGFloat(cursorInfo.opacity))
-        
-        let center = CGPoint(x: CGFloat(intTile) / 2.0, y: CGFloat(intTile) / 2.0)
-        CustomCursorRenderer.drawCursor(
-            in: context,
-            at: center,
-            type: cursorInfo.type,
-            size: baseSize,
-            clickProgress: cursorInfo.clickProgress,
-            isRightClick: cursorInfo.isRightClick
-        )
-        context.restoreGState()
-        
-        guard let cgImage = context.makeImage() else { return nil }
-        let rawCI = CIImage(cgImage: cgImage)
-        
-        let targetX = cursorInfo.position.x * cardSize.width - (CGFloat(intTile) / 2.0)
-        let targetY = (1.0 - cursorInfo.position.y) * cardSize.height - (CGFloat(intTile) / 2.0)
-        
-        return rawCI.transformed(by: CGAffineTransform(translationX: targetX, y: targetY))
     }
 }

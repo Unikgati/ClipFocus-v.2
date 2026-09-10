@@ -379,54 +379,6 @@ public struct EditorStudioView: View {
                     }
                 }
             }
-            
-            // E. Custom Vector Cursor (Screen Studio & FocuSee Style)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    HStack(spacing: 6) {
-                        Image(systemName: "cursorarrow.rays")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color.cyan)
-                        Text("Cursor")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    Spacer()
-                    Toggle("", isOn: $appState.isCursorOverlayEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                }
-                
-                if appState.isCursorOverlayEnabled {
-                    // Cursor Size Scale Slider
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("Size")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text(String(format: "%.1fx", appState.cursorScale))
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.white)
-                        }
-                        Slider(value: $appState.cursorScale, in: 1.0...2.5, step: 0.05).tint(.blue)
-                    }
-                    
-                    // Auto-Hide When Idle Toggle
-                    Toggle(isOn: $appState.autoHideIdleCursor) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "eye.slash.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color.secondary)
-                            Text("Auto-hide when idle (>2s)")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.white.opacity(0.85))
-                        }
-                    }
-                    .toggleStyle(.checkbox)
-                }
-            }
         }
     }
     
@@ -708,7 +660,6 @@ public struct EditorStudioView: View {
                         let yawAngle = appState.currentYaw
                         let rollAngle = appState.currentRoll
                         
-                        let curCursorState = appState.cursorState(at: appState.currentTime)
                         NativeVideoPlayerView(
                             player: player,
                             scale: zoomScale,
@@ -721,9 +672,7 @@ public struct EditorStudioView: View {
                             cornerRadius: cornerRadius,
                             shadowRadius: shadowRadius,
                             is3DEnabled: is3D,
-                            previewScale: previewScale,
-                            cursorState: curCursorState,
-                            cursorScale: appState.cursorScale
+                            previewScale: previewScale
                         )
                         .frame(width: cardW, height: cardH)
                     } else {

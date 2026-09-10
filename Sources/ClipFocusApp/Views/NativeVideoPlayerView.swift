@@ -1,35 +1,6 @@
 import SwiftUI
 import AVFoundation
 import AppKit
-import ClipFocusCore
-
-/// Dedicated CALayer delegate that draws the mathematical vector cursor and animated ripple
-final class CursorCALayerDelegate: NSObject, CALayerDelegate {
-    var cursorState: (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double)?
-    var cursorScale: CGFloat = 1.35
-    var previewScale: CGFloat = 1.0
-    var cardScale: CGFloat = 1.0
-    
-    func draw(_ layer: CALayer, in ctx: CGContext) {
-        guard let state = cursorState, state.opacity > 0.01 else { return }
-        ctx.saveGState()
-        ctx.setAllowsAntialiasing(true)
-        ctx.setShouldAntialias(true)
-        ctx.interpolationQuality = .high
-        ctx.setAlpha(CGFloat(state.opacity))
-        let pt = CGPoint(x: state.position.x * layer.bounds.width, y: state.position.y * layer.bounds.height)
-        let baseSize: CGFloat = 26.0 * cursorScale * max(0.65, previewScale / max(1.0, cardScale * 0.70))
-        CustomCursorRenderer.drawCursor(
-            in: ctx,
-            at: pt,
-            type: state.type,
-            size: baseSize,
-            clickProgress: state.clickProgress,
-            isRightClick: state.isRightClick
-        )
-        ctx.restoreGState()
-    }
-}
 
 /// High-performance 3D Cinematic Perspective Video Player
 /// Directly leverages AVPlayerLayer and CoreAnimation CATransform3D (m34 perspective)
@@ -38,8 +9,6 @@ public final class CinematicPlayerNSView: NSView {
     public let playerLayer = AVPlayerLayer()
     private let contentLayer = CALayer()
     private let clipLayer = CALayer()
-    private let cursorLayer = CALayer()
-    private let cursorDelegate = CursorCALayerDelegate()
     
     private var currentScale: CGFloat = 1.0
     private var currentFocusPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
@@ -56,13 +25,6 @@ public final class CinematicPlayerNSView: NSView {
     
     override public var isFlipped: Bool {
         return true
-    }
-    
-    override public func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        cursorLayer.contentsScale = backing
-        cursorLayer.setNeedsDisplay()
     }
     
     override public func hitTest(_ point: NSPoint) -> NSView? {
@@ -109,14 +71,7 @@ public final class CinematicPlayerNSView: NSView {
         playerLayer.masksToBounds = true
         playerLayer.backgroundColor = NSColor.clear.cgColor
         
-        // Custom Vector Cursor layer (Screen Studio / FocuSee style)
-        cursorLayer.delegate = cursorDelegate
-        cursorLayer.masksToBounds = false
-        cursorLayer.backgroundColor = NSColor.clear.cgColor
-        cursorLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        
         clipLayer.addSublayer(playerLayer)
-        clipLayer.addSublayer(cursorLayer)
         contentLayer.addSublayer(clipLayer)
         layer?.addSublayer(contentLayer)
     }
@@ -131,10 +86,6 @@ public final class CinematicPlayerNSView: NSView {
         
         clipLayer.frame = contentLayer.bounds
         playerLayer.frame = clipLayer.bounds
-        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        cursorLayer.contentsScale = backing
-        cursorLayer.frame = clipLayer.bounds
-        cursorLayer.setNeedsDisplay()
         updateCardTransform()
         CATransaction.commit()
     }
@@ -201,9 +152,7 @@ public final class CinematicPlayerNSView: NSView {
         cornerRadius: CGFloat,
         shadowRadius: CGFloat,
         is3DEnabled: Bool,
-        previewScale: CGFloat = 1.0,
-        cursorState: (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double)? = nil,
-        cursorScale: CGFloat = 1.35
+        previewScale: CGFloat = 1.0
     ) {
         if playerLayer.player !== player {
             playerLayer.player = player
@@ -222,17 +171,6 @@ public final class CinematicPlayerNSView: NSView {
         
         clipLayer.cornerRadius = cornerRadius
         playerLayer.cornerRadius = cornerRadius
-        
-        cursorDelegate.cursorState = cursorState
-        cursorDelegate.cursorScale = cursorScale
-        cursorDelegate.previewScale = previewScale
-        cursorDelegate.cardScale = scale
-        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        if cursorLayer.contentsScale != backing {
-            cursorLayer.contentsScale = backing
-        }
-        cursorLayer.frame = clipLayer.bounds
-        cursorLayer.setNeedsDisplay()
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -254,8 +192,6 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
     public var shadowRadius: CGFloat = 20.0
     public var is3DEnabled: Bool = true
     public var previewScale: CGFloat = 1.0
-    public var cursorState: (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double)? = nil
-    public var cursorScale: CGFloat = 1.35
 
     public init(
         player: AVPlayer,
@@ -269,9 +205,7 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
         cornerRadius: CGFloat = 12.0,
         shadowRadius: CGFloat = 20.0,
         is3DEnabled: Bool = true,
-        previewScale: CGFloat = 1.0,
-        cursorState: (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double)? = nil,
-        cursorScale: CGFloat = 1.35
+        previewScale: CGFloat = 1.0
     ) {
         self.player = player
         self.scale = scale
@@ -285,8 +219,6 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
         self.shadowRadius = shadowRadius
         self.is3DEnabled = is3DEnabled
         self.previewScale = previewScale
-        self.cursorState = cursorState
-        self.cursorScale = cursorScale
     }
 
     public func makeNSView(context: Context) -> CinematicPlayerNSView {
@@ -303,9 +235,7 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
             cornerRadius: cornerRadius,
             shadowRadius: shadowRadius,
             is3DEnabled: is3DEnabled,
-            previewScale: previewScale,
-            cursorState: cursorState,
-            cursorScale: cursorScale
+            previewScale: previewScale
         )
         return view
     }
@@ -323,9 +253,7 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
             cornerRadius: cornerRadius,
             shadowRadius: shadowRadius,
             is3DEnabled: is3DEnabled,
-            previewScale: previewScale,
-            cursorState: cursorState,
-            cursorScale: cursorScale
+            previewScale: previewScale
         )
     }
 }

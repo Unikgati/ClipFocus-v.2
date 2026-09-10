@@ -18,15 +18,6 @@ public enum MouseButtonType: String, Codable, Sendable {
     case other
 }
 
-/// Visual cursor pointer shape
-public enum CursorType: String, Codable, Sendable {
-    case arrow = "arrow"
-    case pointingHand = "pointing_hand"
-    case iBeam = "ibeam"
-    case openHand = "open_hand"
-    case closedHand = "closed_hand"
-}
-
 /// A timestamped user interaction event captured alongside the screen video
 public struct TelemetryEvent: Codable, Identifiable, Sendable {
     public let id: UUID
@@ -39,7 +30,6 @@ public struct TelemetryEvent: Codable, Identifiable, Sendable {
     public let keyCharacters: String?
     public let activeWindowBounds: CGRect?
     public let activeAppBundleId: String?
-    public let cursorType: CursorType?
 
     public init(
         id: UUID = UUID(),
@@ -51,8 +41,7 @@ public struct TelemetryEvent: Codable, Identifiable, Sendable {
         modifierFlags: UInt? = nil,
         keyCharacters: String? = nil,
         activeWindowBounds: CGRect? = nil,
-        activeAppBundleId: String? = nil,
-        cursorType: CursorType? = nil
+        activeAppBundleId: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -64,6 +53,5 @@ public struct TelemetryEvent: Codable, Identifiable, Sendable {
         self.keyCharacters = keyCharacters
         self.activeWindowBounds = activeWindowBounds
         self.activeAppBundleId = activeAppBundleId
-        self.cursorType = cursorType
     }
 }

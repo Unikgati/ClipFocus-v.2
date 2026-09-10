@@ -1,7 +1,6 @@
 import Foundation
 import CoreGraphics
 import AppKit
-import ApplicationServices
 
 /// Protocol to receive telemetry updates as they occur during recording
 public protocol CursorTrackerDelegate: AnyObject, Sendable {
@@ -20,10 +19,6 @@ public final class CursorTracker: @unchecked Sendable {
     private var lastSampledPosition: CGPoint?
     private var lastRecordedTimestamp: TimeInterval = 0.0
     public weak var delegate: CursorTrackerDelegate?
-    
-    private var lastAXQueryTime: TimeInterval = 0.0
-    private var lastCachedAXCursor: CursorType = .arrow
-    private var systemWideElement: AXUIElement? = AXUIElementCreateSystemWide()
     
     public private(set) var recordedEvents: [TelemetryEvent] = []
     private let queue = DispatchQueue(label: "com.clipfocus.telemetry.queue", qos: .userInteractive)
@@ -116,60 +111,12 @@ public final class CursorTracker: @unchecked Sendable {
         self.lastSampledPosition = position
         self.lastRecordedTimestamp = timestamp
         
-        let resolvedCursor = detectCursorType(at: screenPoint, now: timestamp)
-        
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,
             type: .mouseMove,
-            position: position,
-            cursorType: resolvedCursor
+            position: position
         )
         recordEvent(telemetryEvent)
-    }
-    
-    /// Detects the system-wide cursor shape using local NSCursor and Accessibility element inspection
-    private func detectCursorType(at screenPoint: NSPoint, now: TimeInterval) -> CursorType {
-        if NSEvent.pressedMouseButtons != 0 {
-            return .closedHand
-        }
-        
-        // 1. In-process cursor check
-        let cursor = NSCursor.current
-        if cursor == NSCursor.iBeam { return .iBeam }
-        if cursor == NSCursor.pointingHand { return .pointingHand }
-        if cursor == NSCursor.openHand { return .openHand }
-        if cursor == NSCursor.closedHand { return .closedHand }
-        
-        // 2. Throttle AXUIElement system inspection to 20Hz (every 50ms)
-        if now - lastAXQueryTime < 0.05 {
-            return lastCachedAXCursor
-        }
-        lastAXQueryTime = now
-        
-        let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 1080.0
-        let axY = primaryScreenHeight - screenPoint.y
-        var elementRef: AXUIElement?
-        let systemWide = systemWideElement ?? AXUIElementCreateSystemWide()
-        let result = AXUIElementCopyElementAtPosition(systemWide, Float(screenPoint.x), Float(axY), &elementRef)
-        
-        if result == .success, let element = elementRef {
-            var roleValue: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
-               let role = roleValue as? String {
-                let lowerRole = role.lowercased()
-                if lowerRole.contains("text") {
-                    lastCachedAXCursor = .iBeam
-                    return .iBeam
-                }
-                if lowerRole.contains("button") || lowerRole.contains("link") {
-                    lastCachedAXCursor = .pointingHand
-                    return .pointingHand
-                }
-            }
-        }
-        
-        lastCachedAXCursor = .arrow
-        return .arrow
     }
     
     /// Stop tracking and return all collected events
@@ -216,28 +163,13 @@ public final class CursorTracker: @unchecked Sendable {
         
         let button: MouseButtonType = (event.type == .rightMouseDown || event.type == .rightMouseDragged) ? .right : .left
         
-        var cursorType: CursorType = (type == .mouseDrag) ? .closedHand : .arrow
-        if type != .mouseDrag {
-            let cursor = NSCursor.current
-            if cursor == NSCursor.iBeam {
-                cursorType = .iBeam
-            } else if cursor == NSCursor.pointingHand {
-                cursorType = .pointingHand
-            } else if cursor == NSCursor.openHand {
-                cursorType = .openHand
-            } else if cursor == NSCursor.closedHand {
-                cursorType = .closedHand
-            }
-        }
-        
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,
             type: type,
             position: position,
             button: button,
             clickCount: event.clickCount,
-            modifierFlags: event.modifierFlags.rawValue,
-            cursorType: cursorType
+            modifierFlags: event.modifierFlags.rawValue
         )
         
         recordEvent(telemetryEvent)
