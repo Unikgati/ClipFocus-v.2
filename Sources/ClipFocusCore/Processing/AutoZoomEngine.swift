@@ -394,8 +394,13 @@ public final class AutoZoomEngine: @unchecked Sendable {
         var sumY: CGFloat = 0.0
         
         for sample in sampleOffsets {
-            let sTime = max(0, time + sample.dt)
-            let sPos = cursorPosition(at: sTime, from: events, fallback: basePoint)
+            let sampleTime = time + sample.dt
+            // Discard taps that fall before the start of the recording (t < 0).
+            // Clamping them with max(0, time + dt) artificially bunched up >60% of kernel weight at t=0,
+            // which caused an acceleration shudder/stutter when the first zoom occurred near the beginning of the video.
+            guard sampleTime >= 0 else { continue }
+            
+            let sPos = cursorPosition(at: sampleTime, from: events, fallback: basePoint)
             let target = computePushTarget(sPos)
             let w = CGFloat(sample.weight)
             sumX += target.x * w
@@ -403,7 +408,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
             totalWeight += w
         }
         
-        if totalWeight > 0.001 {
+        if totalWeight > 0.0001 {
             let resX = sumX / totalWeight
             let resY = sumY / totalWeight
             return CGPoint(
@@ -424,10 +429,13 @@ public final class AutoZoomEngine: @unchecked Sendable {
     /// Supports seamless direct camera morphing between adjacent/abutting keyframes (FocuSee / Screen Studio style)
     public func evaluateViewport(
         at time: TimeInterval,
+        sourceTime: TimeInterval? = nil,
         with keyframes: [ZoomKeyframe],
         telemetry: [TelemetryEvent] = []
     ) -> ViewportState {
         guard !keyframes.isEmpty else { return .fullScreen }
+        
+        let timeOffset = (sourceTime != nil) ? (sourceTime! - time) : 0.0
         
         // Pre-filter valid events once per evaluation and ensure strictly sorted order
         let validEvents = telemetry.filter { $0.position != nil }.sorted { $0.timestamp < $1.timestamp }
@@ -520,7 +528,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 
                 let currentScale = 1.0 + (kf.scale - 1.0) * CGFloat(eased)
                 // Target destination anchor at zoom landing point (fixed anchor eliminates jitter/wobble during zoom-in transition)
-                let targetFocus = smoothCameraFocus(at: zoomInEnd, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let targetFocus = smoothCameraFocus(at: zoomInEnd + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 let currentX = 0.5 + (targetFocus.x - 0.5) * CGFloat(eased)
                 let currentY = 0.5 + (targetFocus.y - 0.5) * CGFloat(eased)
                 let currentFocus = CGPoint(x: currentX, y: currentY)
@@ -555,7 +563,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
             
             // Case 2: Holding zoomed state (Steadicam cursor radar tracking)
             if time >= holdStart && time < holdEnd {
-                let activeFocus = smoothCameraFocus(at: time, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let activeFocus = smoothCameraFocus(at: time + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 let targetAngles = is3D ? kf.tiltPreset.angles(
                     focusPoint: activeFocus,
                     customPitch: kf.customPitch,
@@ -581,8 +589,8 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let progress = (time - effectiveMorphStart) / max(0.001, effectiveMorphEnd - effectiveMorphStart)
                 let eased = easyEaseInOut(progress)
                 
-                let startFocus = smoothCameraFocus(at: effectiveMorphStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
-                let endFocus = smoothCameraFocus(at: effectiveMorphEnd, from: validEvents, basePoint: next.focusPoint, scale: next.scale)
+                let startFocus = smoothCameraFocus(at: effectiveMorphStart + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let endFocus = smoothCameraFocus(at: effectiveMorphEnd + timeOffset, from: validEvents, basePoint: next.focusPoint, scale: next.scale)
                 
                 let currentScale = kf.scale + (next.scale - kf.scale) * CGFloat(eased)
                 let currentFocus = CGPoint(
@@ -634,7 +642,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let eased = easyEaseInOut(progress)
                 let currentScale = kf.scale - (kf.scale - 1.0) * CGFloat(eased)
                 // Origin anchor at start of zoom-out (fixed anchor eliminates wobble during departure)
-                let startFocus = smoothCameraFocus(at: effectiveZoomOutStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let startFocus = smoothCameraFocus(at: effectiveZoomOutStart + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 
                 let currentX = startFocus.x - (startFocus.x - 0.5) * CGFloat(eased)
                 let currentY = startFocus.y - (startFocus.y - 0.5) * CGFloat(eased)

@@ -1126,7 +1126,8 @@ public final class AppState: @unchecked Sendable {
         let maxAllowed = nextKF != nil ? max(0.05, nextKF!.startTime - start) : max(0.05, totalDuration - start)
         let dur = min(3.0, maxAllowed)
         
-        let targetFocus = autoZoomEngine.cursorPosition(at: start, from: telemetryEvents, fallback: CGPoint(x: 0.5, y: 0.5))
+        let srcStart = sourceVideoTime(for: start) ?? start
+        let targetFocus = autoZoomEngine.cursorPosition(at: srcStart, from: telemetryEvents, fallback: CGPoint(x: 0.5, y: 0.5))
         
         let newKeyframe = ZoomKeyframe(
             startTime: start,
@@ -1704,7 +1705,11 @@ public final class AppState: @unchecked Sendable {
         if !selectedSegmentIDs.isEmpty, let type = selectedTrackType {
             switch type {
             case .video:
-                videoSegments.removeAll { selectedSegmentIDs.contains($0.id) }
+                // Sort selected segments from right to left so ripple delete operates cleanly
+                let toDelete = videoSegments.filter { selectedSegmentIDs.contains($0.id) }.sorted { $0.timelineStartTime > $1.timelineStartTime }
+                for seg in toDelete {
+                    executeRippleDeleteVideoSegment(id: seg.id)
+                }
             case .audio:
                 audioSegments.removeAll { selectedSegmentIDs.contains($0.id) }
             case .zoom:
@@ -1723,9 +1728,62 @@ public final class AppState: @unchecked Sendable {
     
     public func deleteVideoSegment(id: UUID) {
         recordUndoState()
-        videoSegments.removeAll { $0.id == id }
+        executeRippleDeleteVideoSegment(id: id)
+        evaluateCurrentZoom()
         rebuildPlaybackComposition(maintainPlayhead: true)
         syncPlaybackToCurrentTime(accurate: true)
+    }
+
+    private func executeRippleDeleteVideoSegment(id: UUID) {
+        guard let idx = videoSegments.firstIndex(where: { $0.id == id }) else { return }
+        let seg = videoSegments[idx]
+        let start = seg.timelineStartTime
+        let end = seg.timelineEndTime
+        let dur = seg.duration
+        
+        // 1. Remove the deleted video segment
+        videoSegments.remove(at: idx)
+        
+        // 2. Ripple subsequent video segments to close gap
+        for i in 0..<videoSegments.count {
+            if videoSegments[i].timelineStartTime >= end - 0.001 {
+                videoSegments[i].timelineStartTime = max(0.0, videoSegments[i].timelineStartTime - dur)
+            }
+        }
+        
+        // 3. Ripple zoom keyframes:
+        // Keyframes completely inside [start, end]: remove
+        // Keyframes overlapping start boundary: clamp duration to start
+        // Keyframes starting after end: shift start backwards by dur
+        zoomKeyframes.removeAll { kf in
+            let kfEnd = kf.startTime + kf.duration
+            return (kf.startTime >= start - 0.05 && kfEnd <= end + 0.05) || (kf.startTime >= start - 0.05 && kf.startTime < end)
+        }
+        for i in 0..<zoomKeyframes.count {
+            let kf = zoomKeyframes[i]
+            let kfEnd = kf.startTime + kf.duration
+            if kf.startTime < start && kfEnd > start {
+                zoomKeyframes[i].duration = max(0.1, start - kf.startTime)
+            } else if kf.startTime >= end - 0.05 {
+                zoomKeyframes[i].startTime = max(0.0, kf.startTime - dur)
+            }
+        }
+        
+        // 4. Ripple audio segments:
+        for i in 0..<audioSegments.count {
+            if audioSegments[i].timelineStartTime >= end - 0.001 {
+                audioSegments[i].timelineStartTime = max(0.0, audioSegments[i].timelineStartTime - dur)
+            }
+        }
+        
+        // 5. Update totalDuration
+        let maxV = videoSegments.map { $0.timelineEndTime }.max() ?? 0.0
+        let maxA = audioSegments.map { $0.timelineEndTime }.max() ?? 0.0
+        let maxK = zoomKeyframes.map { $0.startTime + $0.duration }.max() ?? 0.0
+        self.totalDuration = max(1.0, max(maxV, max(maxA, maxK)))
+        if self.currentTime > self.totalDuration {
+            self.currentTime = self.totalDuration
+        }
     }
     
     public func deleteAudioSegment(id: UUID) {
@@ -1857,6 +1915,7 @@ public final class AppState: @unchecked Sendable {
         case .video:
             if let idx = videoSegments.firstIndex(where: { $0.id == id }) {
                 let seg = videoSegments[idx]
+                let oldStart = seg.timelineStartTime
                 let oldEnd = seg.timelineEndTime
                 let others = videoSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
                 let prev = others.filter { $0.timelineStartTime < seg.timelineStartTime }.last
@@ -1873,6 +1932,14 @@ public final class AppState: @unchecked Sendable {
                 videoSegments[idx].timelineStartTime = clampedStart
                 videoSegments[idx].sourceStartTime = max(0.0, seg.sourceStartTime + delta)
                 videoSegments[idx].duration = max(0.2, oldEnd - clampedStart)
+                
+                // Remove any zoom keyframes in the trimmed-out region
+                if delta > 0.01 {
+                    zoomKeyframes.removeAll { kf in
+                        let kfEnd = kf.startTime + kf.duration
+                        return kf.startTime >= oldStart - 0.05 && kfEnd <= clampedStart + 0.05
+                    }
+                }
             }
         case .audio:
             if let idx = audioSegments.firstIndex(where: { $0.id == id }) {
@@ -1913,8 +1980,20 @@ public final class AppState: @unchecked Sendable {
                 // Cannot overlap next clip or extend beyond timeline totalDuration
                 let maxTimelineDur = next != nil ? max(0.2, next!.timelineStartTime - seg.timelineStartTime) : max(0.2, totalDuration - seg.timelineStartTime)
                 let maxDur = min(maxSourceDur, maxTimelineDur)
+                let finalDur = max(0.2, min(maxDur, newDuration))
+                let newEnd = seg.timelineStartTime + finalDur
                 
-                videoSegments[idx].duration = max(0.2, min(maxDur, newDuration))
+                videoSegments[idx].duration = finalDur
+                
+                // Clean up zoom keyframes trimmed out at the end
+                zoomKeyframes.removeAll { kf in
+                    return kf.startTime >= newEnd
+                }
+                for k in 0..<zoomKeyframes.count {
+                    if zoomKeyframes[k].startTime < newEnd && (zoomKeyframes[k].startTime + zoomKeyframes[k].duration) > newEnd {
+                        zoomKeyframes[k].duration = max(0.1, newEnd - zoomKeyframes[k].startTime)
+                    }
+                }
             }
         case .audio:
             if let idx = audioSegments.firstIndex(where: { $0.id == id }) {
@@ -1940,13 +2019,26 @@ public final class AppState: @unchecked Sendable {
         switch trackType {
         case .video:
             if let idx = videoSegments.firstIndex(where: { $0.id == id }) {
+                let oldStart = videoSegments[idx].timelineStartTime
                 let dur = videoSegments[idx].duration
+                let oldEnd = oldStart + dur
                 let others = videoSegments.filter { $0.id != id }.sorted { $0.timelineStartTime < $1.timelineStartTime }
                 let prev = others.filter { $0.timelineStartTime < videoSegments[idx].timelineStartTime }.last
                 let next = others.filter { $0.timelineStartTime >= videoSegments[idx].timelineStartTime }.first
                 let minStart = prev != nil ? prev!.timelineEndTime : 0.0
                 let maxStart = next != nil ? max(minStart, next!.timelineStartTime - dur) : max(minStart, totalDuration - dur)
-                videoSegments[idx].timelineStartTime = max(minStart, min(maxStart, newTimelineStart))
+                let clampedNewStart = max(minStart, min(maxStart, newTimelineStart))
+                let delta = clampedNewStart - oldStart
+                videoSegments[idx].timelineStartTime = clampedNewStart
+                
+                // Keep associated zoom keyframes linked to this video segment
+                if abs(delta) > 0.001 {
+                    for k in 0..<zoomKeyframes.count {
+                        if zoomKeyframes[k].startTime >= oldStart - 0.05 && zoomKeyframes[k].startTime < oldEnd {
+                            zoomKeyframes[k].startTime = max(0.0, zoomKeyframes[k].startTime + delta)
+                        }
+                    }
+                }
             }
         case .audio:
             if let idx = audioSegments.firstIndex(where: { $0.id == id }) {
@@ -2636,9 +2728,11 @@ public final class AppState: @unchecked Sendable {
                         telemetryEvents: self.telemetryEvents,
                         tiltIntensity: self.tiltIntensity,
                         disableZoom: self.disableZoom,
-                        scaleFactor: scaleFactor
+                        scaleFactor: scaleFactor,
+                        videoSegments: self.videoSegments
                     )
                     
+                    VideoCompositorEngine.warmup(renderSize: renderSize)
                     let videoComp = VideoCompositorEngine.shared.buildVideoComposition(
                         for: composition,
                         config: compositorConfig
@@ -2724,7 +2818,8 @@ public final class AppState: @unchecked Sendable {
         
         // Single Unified Engine Truth: evaluateViewport calculates scale, smooth camera focus (telemetry radar tracking),
         // 3D tilt angles, and pan offsets identically across dynamic playback, scrubbing, paused inspection, and sidebar adjustments.
-        let viewport = autoZoomEngine.evaluateViewport(at: currentTime, with: zoomKeyframes, telemetry: telemetryEvents)
+        let srcTime = sourceVideoTime(for: currentTime)
+        let viewport = autoZoomEngine.evaluateViewport(at: currentTime, sourceTime: srcTime, with: zoomKeyframes, telemetry: telemetryEvents)
         self.currentZoomScale = viewport.scale
         self.currentFocusPoint = viewport.focusPoint
         self.currentPitch = viewport.pitch * tiltIntensity

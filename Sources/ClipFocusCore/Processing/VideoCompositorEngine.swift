@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreImage
 import CoreGraphics
+import Metal
 
 /// Configuration parameters for offline video compositing and export rendering.
 public struct VideoCompositorConfig: Sendable {
@@ -20,6 +21,7 @@ public struct VideoCompositorConfig: Sendable {
     public var tiltIntensity: Double
     public var disableZoom: Bool
     public var scaleFactor: CGFloat
+    public var videoSegments: [MediaClipSegment]
     
     public init(
         renderSize: CGSize,
@@ -32,7 +34,8 @@ public struct VideoCompositorConfig: Sendable {
         telemetryEvents: [TelemetryEvent] = [],
         tiltIntensity: Double = 1.0,
         disableZoom: Bool = false,
-        scaleFactor: CGFloat = 1.0
+        scaleFactor: CGFloat = 1.0,
+        videoSegments: [MediaClipSegment] = []
     ) {
         self.renderSize = renderSize
         self.padding = padding
@@ -45,6 +48,7 @@ public struct VideoCompositorConfig: Sendable {
         self.tiltIntensity = tiltIntensity
         self.disableZoom = disableZoom
         self.scaleFactor = scaleFactor > 0 ? scaleFactor : 1.0
+        self.videoSegments = videoSegments
     }
 }
 
@@ -54,6 +58,74 @@ public struct VideoCompositorConfig: Sendable {
 public final class VideoCompositorEngine: Sendable {
     public static let shared = VideoCompositorEngine()
     private let autoZoomEngine = AutoZoomEngine()
+    
+    /// Persistent Metal-accelerated CIContext for export rendering.
+    /// Reusing a single pre-warmed CIContext prevents GPU pipeline halts,
+    /// shader compilation spikes, and intermediate allocation stutter during the initial zoom frames.
+    public static let sharedCIContext: CIContext = {
+        if let mtlDevice = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: mtlDevice, options: [
+                .cacheIntermediates: true,
+                .priorityRequestLow: false
+            ])
+        }
+        return CIContext(options: [
+            .cacheIntermediates: true
+        ])
+    }()
+    
+    /// Pre-warms the Metal shader compilation pipeline for all Core Image filters
+    /// (PerspectiveTransform, GaussianBlur, RoundedRectangleGenerator, BlendWithMask, Gradients).
+    /// Executing this before exportSession starts ensures zero shader compilation freezes
+    /// during the first zoom-in transition.
+    public static func warmup(renderSize: CGSize) {
+        let testSize = CGSize(width: min(128, max(64, renderSize.width)), height: min(128, max(64, renderSize.height)))
+        let rectGen = CIFilter(name: "CIRoundedRectangleGenerator")!
+        rectGen.setValue(CIVector(cgRect: CGRect(origin: .zero, size: testSize)), forKey: "inputExtent")
+        rectGen.setValue(16.0, forKey: "inputRadius")
+        rectGen.setValue(CIColor.white, forKey: "inputColor")
+        guard let mask = rectGen.outputImage else { return }
+        
+        let colorImage = CIImage(color: CIColor.blue).cropped(to: CGRect(origin: .zero, size: testSize))
+        let blend = CIFilter(name: "CIBlendWithMask")!
+        blend.setValue(colorImage, forKey: kCIInputImageKey)
+        blend.setValue(mask, forKey: kCIInputMaskImageKey)
+        blend.setValue(CIImage.empty(), forKey: kCIInputBackgroundImageKey)
+        guard let blended = blend.outputImage else { return }
+        
+        let persp = CIFilter(name: "CIPerspectiveTransform")!
+        persp.setValue(blended, forKey: kCIInputImageKey)
+        persp.setValue(CIVector(cgPoint: CGPoint(x: 5, y: 5)), forKey: "inputTopLeft")
+        persp.setValue(CIVector(cgPoint: CGPoint(x: 120, y: 5)), forKey: "inputTopRight")
+        persp.setValue(CIVector(cgPoint: CGPoint(x: 120, y: 120)), forKey: "inputBottomRight")
+        persp.setValue(CIVector(cgPoint: CGPoint(x: 5, y: 120)), forKey: "inputBottomLeft")
+        guard let warped = persp.outputImage else { return }
+        
+        let blur = CIFilter(name: "CIGaussianBlur")!
+        blur.setValue(warped.cropped(to: CGRect(origin: .zero, size: testSize)), forKey: kCIInputImageKey)
+        blur.setValue(24.0, forKey: kCIInputRadiusKey)
+        guard let blurred = blur.outputImage else { return }
+        
+        let grad = CIFilter(name: "CILinearGradient")!
+        grad.setValue(CIVector(x: 0, y: testSize.height), forKey: "inputPoint0")
+        grad.setValue(CIVector(x: testSize.width, y: 0), forKey: "inputPoint1")
+        grad.setValue(CIColor(red: 0.1, green: 0.1, blue: 0.1), forKey: "inputColor0")
+        grad.setValue(CIColor(red: 0.2, green: 0.2, blue: 0.2), forKey: "inputColor1")
+        let bg = grad.outputImage ?? CIImage(color: CIColor.black)
+        
+        let finalImage = blurred.composited(over: bg).cropped(to: CGRect(origin: .zero, size: testSize))
+        
+        // Render 1 single pixel off-screen to force Metal driver to compile all GPU pipelines
+        var pixel: [UInt8] = [0, 0, 0, 0]
+        sharedCIContext.render(
+            finalImage,
+            toBitmap: &pixel,
+            rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+    }
     
     // Exact CIColor definitions matching the EditorStudioView presets
     private static let gradientPresets: [(CIColor, CIColor)] = [
@@ -118,7 +190,12 @@ public final class VideoCompositorEngine: Sendable {
             if config.disableZoom {
                 viewport = .fullScreen
             } else {
-                viewport = autoZoom.evaluateViewport(at: timeSec, with: config.zoomKeyframes, telemetry: config.telemetryEvents)
+                let sourceTime = config.videoSegments.first(where: {
+                    timeSec >= ($0.timelineStartTime - 0.0001) && timeSec <= ($0.timelineEndTime + 0.0001)
+                }).map {
+                    $0.sourceStartTime + max(0, min($0.duration, timeSec - $0.timelineStartTime))
+                }
+                viewport = autoZoom.evaluateViewport(at: timeSec, sourceTime: sourceTime, with: config.zoomKeyframes, telemetry: config.telemetryEvents)
             }
             
             let zoomScale = max(1.0, viewport.scale)
@@ -198,7 +275,7 @@ public final class VideoCompositorEngine: Sendable {
             rectGen.setValue(CIColor.white, forKey: "inputColor")
             
             guard let cardMask = rectGen.outputImage else {
-                request.finish(with: sourceImage, context: nil)
+                request.finish(with: sourceImage, context: Self.sharedCIContext)
                 return
             }
             
@@ -209,7 +286,7 @@ public final class VideoCompositorEngine: Sendable {
             blend.setValue(CIImage.empty(), forKey: kCIInputBackgroundImageKey)
             
             guard let baseCard = blend.outputImage else {
-                request.finish(with: sourceImage, context: nil)
+                request.finish(with: sourceImage, context: Self.sharedCIContext)
                 return
             }
             
@@ -311,11 +388,12 @@ public final class VideoCompositorEngine: Sendable {
             
             // 8. Final Composite over Dynamic Canvas Background
             let finalFrame = compositeCard.composited(over: bgImage).cropped(to: CGRect(origin: .zero, size: renderSize))
-            request.finish(with: finalFrame, context: nil)
+            request.finish(with: finalFrame, context: Self.sharedCIContext)
         }
         
         videoComp.renderSize = renderSize
         videoComp.frameDuration = CMTime(value: 1, timescale: 60)
+        videoComp.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
         return videoComp
     }
 }

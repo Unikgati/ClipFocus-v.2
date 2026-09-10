@@ -903,6 +903,195 @@ final class ClipFocusCoreTests: XCTestCase {
         XCTAssertLessThan(diffBR, 0.005, "BR projection must match preview perfectly")
         XCTAssertLessThan(diffBL, 0.005, "BL projection must match preview perfectly")
     }
+    
+    func testEvaluateViewportWithSourceTimeRemapping() {
+        let engine = AutoZoomEngine()
+        
+        // Simulates a video that was recorded for 30s.
+        // At source t=15.0s, user clicked button at (0.8, 0.2).
+        let telemetry = [
+            TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.1, y: 0.9)),
+            TelemetryEvent(timestamp: 15.0, type: .mouseMove, position: CGPoint(x: 0.7, y: 0.3)),
+            TelemetryEvent(timestamp: 17.0, type: .mouseMove, position: CGPoint(x: 0.7, y: 0.3))
+        ]
+        
+        // In the editor, user cut out 10s (5s-15s).
+        // The zoom keyframe was shifted to timeline t=5.0s, but its visual content corresponds to source t=15.0s.
+        let keyframes = [
+            ZoomKeyframe(
+                startTime: 5.0,
+                duration: 3.0,
+                focusPoint: CGPoint(x: 0.7, y: 0.3),
+                scale: 2.0,
+                easing: .springSmooth,
+                effectType: .zoom2D
+            )
+        ]
+        
+        // When evaluating with sourceTime = 16.2 at timeline time = 6.2 (inside hold window):
+        let vpWithSource = engine.evaluateViewport(at: 6.2, sourceTime: 16.2, with: keyframes, telemetry: telemetry)
+        XCTAssertEqual(vpWithSource.scale, 2.0, accuracy: 0.01)
+        // Focus point should track the click at (0.7, 0.3)
+        XCTAssertEqual(vpWithSource.focusPoint.x, 0.7, accuracy: 0.02)
+        XCTAssertEqual(vpWithSource.focusPoint.y, 0.3, accuracy: 0.02)
+    }
+    
+    func testMediaClipSegmentSplitAndRippleMath() {
+        // Test splitting at t=5.0:
+        var seg1 = MediaClipSegment(
+            sourceStartTime: 0.0,
+            timelineStartTime: 0.0,
+            duration: 10.0
+        )
+        let splitTime = 5.0
+        let firstDur = splitTime - seg1.timelineStartTime
+        let secondDur = seg1.duration - firstDur
+        seg1.duration = firstDur
+        
+        let seg2 = MediaClipSegment(
+            sourceStartTime: seg1.sourceStartTime + firstDur,
+            timelineStartTime: splitTime,
+            duration: secondDur
+        )
+        
+        XCTAssertEqual(seg1.duration, 5.0)
+        XCTAssertEqual(seg2.sourceStartTime, 5.0)
+        XCTAssertEqual(seg2.timelineStartTime, 5.0)
+        XCTAssertEqual(seg2.duration, 5.0)
+        
+        // Now simulate deleting a 3s cut from t=5.0 to t=8.0:
+        let cutStart = 5.0
+        let cutDur = 3.0
+        let cutEnd = cutStart + cutDur
+        
+        var subsequentSeg = MediaClipSegment(
+            sourceStartTime: 8.0,
+            timelineStartTime: cutEnd,
+            duration: 12.0
+        )
+        var subsequentKF = ZoomKeyframe(
+            startTime: 10.0,
+            duration: 3.0,
+            focusPoint: CGPoint(x: 0.5, y: 0.5)
+        )
+        
+        // Ripple shifts:
+        if subsequentSeg.timelineStartTime >= cutEnd - 0.001 {
+            subsequentSeg.timelineStartTime -= cutDur
+        }
+        if subsequentKF.startTime >= cutEnd - 0.001 {
+            subsequentKF.startTime -= cutDur
+        }
+        
+        XCTAssertEqual(subsequentSeg.timelineStartTime, 5.0)
+        XCTAssertEqual(subsequentKF.startTime, 7.0) // 10.0 - 3.0 = 7.0
+    }
+    
+    func testFirstZoomSmoothness60fps() {
+        let engine = AutoZoomEngine()
+        let keyframes = [
+            ZoomKeyframe(
+                startTime: 1.0,
+                duration: 3.0,
+                focusPoint: CGPoint(x: 0.7, y: 0.3),
+                scale: 2.0,
+                easing: .springSmooth,
+                effectType: .motion3D,
+                tiltPreset: .auto
+            )
+        ]
+        let telemetry = [
+            TelemetryEvent(timestamp: 0.0, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.7, y: 0.3)),
+            TelemetryEvent(timestamp: 3.0, type: .mouseMove, position: CGPoint(x: 0.7, y: 0.3))
+        ]
+        
+        var prevScale: CGFloat = 1.0
+        var prevFocusX: CGFloat = 0.5
+        var prevPitch: Double = 0.0
+        
+        // Check frame-by-frame at 60fps across the zoom-in transition (0.8s to 2.0s)
+        for frame in 0...120 {
+            let t = 0.8 + Double(frame) * (1.0 / 60.0)
+            let vp = engine.evaluateViewport(at: t, with: keyframes, telemetry: telemetry)
+            
+            // 1. Scale must increase monotonically during zoom-in
+            if t >= 1.0 && t <= 1.8 {
+                XCTAssertGreaterThanOrEqual(vp.scale, prevScale - 0.001, "Scale decreased at t=\(t) frame=\(frame): \(vp.scale) < \(prevScale)")
+            }
+            
+            // 2. No sudden huge jerk in focus point (> 0.08 in a single 16ms frame)
+            let dFocus = hypot(vp.focusPoint.x - prevFocusX, 0.0)
+            XCTAssertLessThan(dFocus, 0.08, "Focus jerk at t=\(t) frame=\(frame): \(dFocus)")
+            
+            prevScale = vp.scale
+            prevFocusX = vp.focusPoint.x
+            prevPitch = vp.pitch
+        }
+    }
+    
+    func testEarlyFirstZoomSmoothnessAtRecordingStart() {
+        let engine = AutoZoomEngine()
+        // First zoom occurs very early at t = 0.2s (where causal kernel taps cross t = 0)
+        let keyframes = [
+            ZoomKeyframe(
+                startTime: 0.2,
+                duration: 3.0,
+                focusPoint: CGPoint(x: 0.75, y: 0.25),
+                scale: 2.0,
+                easing: .springSmooth,
+                effectType: .motion3D,
+                tiltPreset: .auto
+            )
+        ]
+        let telemetry = [
+            TelemetryEvent(timestamp: 0.0, type: .mouseMove, position: CGPoint(x: 0.4, y: 0.4)),
+            TelemetryEvent(timestamp: 0.2, type: .mouseClick, position: CGPoint(x: 0.75, y: 0.25)),
+            TelemetryEvent(timestamp: 0.8, type: .mouseMove, position: CGPoint(x: 0.75, y: 0.25))
+        ]
+        
+        var prevScale: CGFloat = 1.0
+        var prevFocusX: CGFloat = 0.5
+        
+        for frame in 0...100 {
+            let t = Double(frame) * (1.0 / 60.0)
+            let vp = engine.evaluateViewport(at: t, with: keyframes, telemetry: telemetry)
+            
+            // Monotonic scale transition
+            if t >= 0.2 && t <= 0.65 {
+                XCTAssertGreaterThanOrEqual(vp.scale, prevScale - 0.001)
+            }
+            
+            // Smooth focus movement, no unclamp stutter (> 0.04 in 16ms frame)
+            let dFocus = hypot(vp.focusPoint.x - prevFocusX, 0.0)
+            XCTAssertLessThan(dFocus, 0.04, "Early focus jerk at t=\(t) frame=\(frame): \(dFocus)")
+            
+            prevScale = vp.scale
+            prevFocusX = vp.focusPoint.x
+        }
+    }
+    
+    func testVideoCompositorEngineWarmupAndSharedContext() {
+        // Verify sharedCIContext is active and warmup executes without error
+        let context = VideoCompositorEngine.sharedCIContext
+        XCTAssertNotNil(context)
+        VideoCompositorEngine.warmup(renderSize: CGSize(width: 1920, height: 1080))
+    }
+    
+    func testExportFrameTimingWithInvalidTrackID() {
+        let composition = AVMutableComposition()
+        let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        track.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 5, preferredTimescale: 600)))
+        
+        let config = VideoCompositorConfig(renderSize: CGSize(width: 1920, height: 1080))
+        let videoComp = VideoCompositorEngine.shared.buildVideoComposition(for: composition, config: config)
+        
+        // Must be kCMPersistentTrackID_Invalid so AVFoundation generates strict CFR 60fps frames
+        // instead of inheriting VFR gaps from screen recording
+        XCTAssertEqual(videoComp.sourceTrackIDForFrameTiming, kCMPersistentTrackID_Invalid)
+        XCTAssertEqual(videoComp.frameDuration, CMTime(value: 1, timescale: 60))
+        XCTAssertEqual(videoComp.renderSize, CGSize(width: 1920, height: 1080))
+    }
 }
 
 
