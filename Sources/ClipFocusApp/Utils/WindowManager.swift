@@ -424,6 +424,8 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             recordingPillPanel?.orderOut(nil)
             
             if let window = editorWindow {
+                window.title = "\(appState.projectTitle) — ClipFocus"
+                window.isDocumentEdited = appState.isDirty
                 window.center()
                 window.makeKeyAndOrderFront(nil)
                 NSApplication.shared.activate(ignoringOtherApps: true)
@@ -728,6 +730,15 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             appState?.showPermissionsWindow = false
             return false
         } else if sender == editorWindow {
+            if let app = appState, app.isDirty {
+                app.checkUnsavedChanges { [weak self] in
+                    self?.appState?.cleanupEditorPlayback()
+                    self?.appState?.currentView = .launcher
+                    self?.editorWindow?.orderOut(nil)
+                    self?.updateWindows()
+                }
+                return false
+            }
             appState?.cleanupEditorPlayback()
             appState?.currentView = .launcher
             return false

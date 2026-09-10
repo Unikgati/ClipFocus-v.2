@@ -109,8 +109,9 @@ public final class CinematicPlayerNSView: NSView {
         let fy = max(0.0, min(1.0, currentFocusPoint.y))
         
         // Exact viewport translation: centers the camera focus point smoothly
-        let transX = (0.5 - fx) * bounds.width * scale + (currentPositionX * 2.0)
-        let transY = (0.5 - fy) * bounds.height * scale + (currentPositionY * 2.0)
+        let panScale = bounds.width / 850.0
+        let transX = (0.5 - fx) * bounds.width * scale + (currentPositionX * 2.0) * panScale
+        let transY = (0.5 - fy) * bounds.height * scale + (currentPositionY * 2.0) * panScale
         
         // Smooth continuous 3D tilt factor (0.0 when flat, smoothly rising to 1.0 when tilted)
         let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)

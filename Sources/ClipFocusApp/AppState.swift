@@ -4,6 +4,7 @@ import AVFoundation
 import ClipFocusCore
 import AppKit
 import ScreenCaptureKit
+import UniformTypeIdentifiers
 
 public enum AppViewMode {
     case launcher
@@ -94,8 +95,13 @@ public final class AppState: @unchecked Sendable {
     public var hoveredWindowFrame: CGRect? = nil
     public var hoveredWindowName: String? = nil
     
-    // Real Video Recording & Playback
+    // Real Video Recording, Playback & Project File Management
     public var recordedVideoURL: URL? = nil
+    public var currentProjectURL: URL? = nil
+    public var projectTitle: String = "Untitled Project"
+    public var currentProjectCreatedAt: Date? = nil
+    public var isDirty: Bool = false
+    public var showSaveSuccessToast: Bool = false
     public var avPlayer: AVPlayer? = nil
     public var videoAspectRatio: CGFloat = {
         if let screen = NSScreen.main {
@@ -418,6 +424,7 @@ public final class AppState: @unchecked Sendable {
     public var canvasRatio: String = "16:9"
     public var customWidth: String = "16"
     public var customHeight: String = "9"
+    public var exportResolution: String = "1080p" // "1080p", "2K", "4K", "Auto"
     
     public var padding: Double = 10.0
     public var inset: Double = 0.0
@@ -470,6 +477,10 @@ public final class AppState: @unchecked Sendable {
     private let autoZoomEngine = AutoZoomEngine()
     private var timeObserverToken: Any?
     private var playbackDisplayTimer: Timer?
+    private var cachedSourceAsset: AVURLAsset? = nil
+    private var cachedVideoTrack: AVAssetTrack? = nil
+    private var cachedAudioTracks: [AVAssetTrack] = []
+    private var cachedVideoTransform: CGAffineTransform = .identity
     
     public init() {
         checkPermissions()
@@ -845,10 +856,16 @@ public final class AppState: @unchecked Sendable {
         
         self.recordedVideoURL = url
         self.totalDuration = max(1.0, project?.duration ?? 10.0)
+        self.projectTitle = project?.title ?? url.deletingPathExtension().lastPathComponent
+        self.currentProjectCreatedAt = project?.createdAt ?? Date()
+        self.isDirty = false
+        self.startAutosaveTimer()
         
-        // Load telemetry events from project or adjacent json
+        // Load telemetry events from embedded project, external project path, or adjacent json
         var loadedEvents: [TelemetryEvent] = []
-        if let telPath = project?.telemetryFilename, !telPath.isEmpty, FileManager.default.fileExists(atPath: telPath) {
+        if let embedded = project?.embeddedTelemetry, !embedded.isEmpty {
+            loadedEvents = embedded
+        } else if let telPath = project?.telemetryFilename, !telPath.isEmpty, FileManager.default.fileExists(atPath: telPath) {
             if let data = try? Data(contentsOf: URL(fileURLWithPath: telPath)),
                let evs = try? JSONDecoder().decode([TelemetryEvent].self, from: data) {
                 loadedEvents = evs
@@ -906,9 +923,10 @@ public final class AppState: @unchecked Sendable {
         
         self.clearHistory()
         
-        // Setup AVPlayer
-        let player = AVPlayer(url: url)
+        // Setup initial AVPlayer
+        let player = AVPlayer()
         self.avPlayer = player
+        self.setupTimeObserver(for: player)
         self.setVolume(self.audioVolume)
         
         // Asynchronously extract audio waveform for timeline visualization
@@ -916,6 +934,7 @@ public final class AppState: @unchecked Sendable {
         
         // Load real asset duration and natural aspect ratio asynchronously
         let asset = AVURLAsset(url: url)
+        self.cachedSourceAsset = asset
         Task {
             if let dur = try? await asset.load(.duration), dur.seconds > 0.2 {
                 await MainActor.run {
@@ -928,21 +947,143 @@ public final class AppState: @unchecked Sendable {
                     }
                 }
             }
-            if let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first {
-                if let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
-                    let isRotated = (transform.a == 0 && abs(transform.b) == 1)
+            let vTracks = try? await asset.loadTracks(withMediaType: .video)
+            let aTracks = try? await asset.loadTracks(withMediaType: .audio)
+            let firstVTrack = vTracks?.first
+            
+            var aspect: CGFloat = 16.0 / 9.0
+            var vTransform: CGAffineTransform = .identity
+            if let track = firstVTrack {
+                if let transform = try? await track.load(.preferredTransform) {
+                    vTransform = transform
+                }
+                if let size = try? await track.load(.naturalSize) {
+                    let isRotated = (vTransform.a == 0 && abs(vTransform.b) == 1)
                     let w = isRotated ? size.height : size.width
                     let h = isRotated ? size.width : size.height
                     if w > 10 && h > 10 {
-                        await MainActor.run {
-                            self.videoAspectRatio = CGFloat(w) / CGFloat(h)
+                        aspect = CGFloat(w) / CGFloat(h)
+                    }
+                }
+            }
+            let finalTransform = vTransform
+            let finalAspect = aspect
+            await MainActor.run {
+                self.cachedVideoTrack = firstVTrack
+                self.cachedAudioTracks = aTracks ?? []
+                self.cachedVideoTransform = finalTransform
+                self.videoAspectRatio = finalAspect
+                self.rebuildPlaybackComposition(maintainPlayhead: false)
+            }
+        }
+        
+        self.currentView = .editor
+        self.pauseVideo()
+        self.seek(to: 0.0, accurate: true)
+    }
+    
+    // MARK: - Gapless NLE Playback Composition Engine
+    
+    public func rebuildPlaybackComposition(maintainPlayhead: Bool = true) {
+        guard let url = recordedVideoURL else { return }
+        
+        let asset: AVURLAsset
+        if let cached = cachedSourceAsset, cached.url == url {
+            asset = cached
+        } else {
+            asset = AVURLAsset(url: url)
+            cachedSourceAsset = asset
+        }
+        
+        if cachedVideoTrack == nil && !videoSegments.isEmpty {
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.cachedVideoTrack = (try? await asset.loadTracks(withMediaType: .video))?.first
+                self.cachedAudioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+                if let vTrack = self.cachedVideoTrack, let transform = try? await vTrack.load(.preferredTransform) {
+                    self.cachedVideoTransform = transform
+                }
+                self.executeRebuildComposition(asset: asset, maintainPlayhead: maintainPlayhead)
+            }
+        } else {
+            executeRebuildComposition(asset: asset, maintainPlayhead: maintainPlayhead)
+        }
+    }
+    
+    private func executeRebuildComposition(asset: AVURLAsset, maintainPlayhead: Bool) {
+        let composition = AVMutableComposition()
+        
+        // 1. Video Track
+        if !isVideoTrackHidden, let assetVTrack = cachedVideoTrack, !videoSegments.isEmpty {
+            if let compVTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                compVTrack.preferredTransform = self.cachedVideoTransform
+                
+                let sortedVSegs = videoSegments.sorted { $0.timelineStartTime < $1.timelineStartTime }
+                for seg in sortedVSegs {
+                    guard seg.duration > 0.05 else { continue }
+                    let srcRange = CMTimeRange(
+                        start: CMTime(seconds: seg.sourceStartTime, preferredTimescale: 600),
+                        duration: CMTime(seconds: seg.duration, preferredTimescale: 600)
+                    )
+                    let atTime = CMTime(seconds: seg.timelineStartTime, preferredTimescale: 600)
+                    do {
+                        try compVTrack.insertTimeRange(srcRange, of: assetVTrack, at: atTime)
+                    } catch {
+                        NSLog("[ClipFocus] Composition video insert error: %@", error.localizedDescription)
+                    }
+                }
+            }
+        }
+        
+        // 2. Audio Tracks
+        if !isAudioMuted, !audioSegments.isEmpty {
+            let activeASegs = audioSegments.filter { !$0.isMuted && $0.duration > 0.05 }.sorted { $0.timelineStartTime < $1.timelineStartTime }
+            for assetATrack in cachedAudioTracks {
+                if let compATrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                    for seg in activeASegs {
+                        let srcRange = CMTimeRange(
+                            start: CMTime(seconds: seg.sourceStartTime, preferredTimescale: 600),
+                            duration: CMTime(seconds: seg.duration, preferredTimescale: 600)
+                        )
+                        let atTime = CMTime(seconds: seg.timelineStartTime, preferredTimescale: 600)
+                        do {
+                            try compATrack.insertTimeRange(srcRange, of: assetATrack, at: atTime)
+                        } catch {
+                            NSLog("[ClipFocus] Composition audio insert error: %@", error.localizedDescription)
                         }
                     }
                 }
             }
         }
         
-        // Setup periodic time observer for end-of-playback boundaries
+        let playerItem = AVPlayerItem(asset: composition)
+        let wasPlaying = self.isPlaying
+        let targetTime = maintainPlayhead ? min(self.currentTime, self.totalDuration) : 0.0
+        
+        if let player = self.avPlayer {
+            player.replaceCurrentItem(with: playerItem)
+        } else {
+            let player = AVPlayer(playerItem: playerItem)
+            self.avPlayer = player
+            setupTimeObserver(for: player)
+        }
+        
+        setVolume(self.audioVolume)
+        
+        let targetCM = CMTime(seconds: targetTime, preferredTimescale: 600)
+        self.avPlayer?.seek(to: targetCM, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            guard let self = self else { return }
+            if wasPlaying && self.playbackSpeed > 0 {
+                self.avPlayer?.rate = Float(self.playbackSpeed)
+            }
+        }
+    }
+    
+    private func setupTimeObserver(for player: AVPlayer) {
+        if let token = self.timeObserverToken {
+            self.avPlayer?.removeTimeObserver(token)
+            self.timeObserverToken = nil
+        }
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         self.timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
@@ -950,10 +1091,6 @@ public final class AppState: @unchecked Sendable {
                 self.pauseVideo()
             }
         }
-        
-        self.currentView = .editor
-        self.pauseVideo()
-        self.seek(to: 0.0, accurate: true)
     }
     
     /// Clean up AVPlayer and release video file resources when leaving editor
@@ -1104,14 +1241,12 @@ public final class AppState: @unchecked Sendable {
     public func syncPlaybackToCurrentTime(accurate: Bool = false) {
         let t = currentTime
         
-        // 1. Frame / Source Mapping Sync
-        if let srcTime = activeSourceTime(for: t) {
-            let targetCMTime = CMTime(seconds: srcTime, preferredTimescale: 600)
-            let tol: CMTime = accurate ? .zero : CMTime(value: 1, timescale: 30)
-            avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
-        }
+        // Seek directly in the virtual composition timeline
+        let targetCMTime = CMTime(seconds: t, preferredTimescale: 600)
+        let tol: CMTime = accurate ? .zero : CMTime(value: 1, timescale: 30)
+        avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
         
-        // 2. Audio Track Volume / Mute Sync
+        // Audio Track Volume / Mute Sync
         let aSeg = activeAudioSegment(at: t)
         let isMute = isAudioMuted || aSeg == nil || (aSeg?.isMuted ?? false)
         avPlayer?.isMuted = isMute
@@ -1124,27 +1259,22 @@ public final class AppState: @unchecked Sendable {
         if currentTime >= (totalDuration - 0.05) {
             seek(to: 0.0, accurate: true)
         }
-        if playbackSpeed < 0 {
+        if playbackSpeed <= 0 {
             playbackSpeed = 1.0
         }
         isPlaying = true
         
-        let t = currentTime
-        let srcTime = activeSourceTime(for: t)
-        if let st = srcTime {
-            let targetCM = CMTime(seconds: st, preferredTimescale: 600)
-            avPlayer?.seek(to: targetCM, toleranceBefore: CMTime(value: 1, timescale: 30), toleranceAfter: CMTime(value: 1, timescale: 30))
-        }
-        
-        let aSeg = activeAudioSegment(at: t)
-        let isMute = isAudioMuted || aSeg == nil || (aSeg?.isMuted ?? false)
-        avPlayer?.isMuted = isMute
-        avPlayer?.volume = isMute ? 0.0 : Float(audioVolume * (aSeg?.volume ?? 1.0))
-        
-        if srcTime != nil && playbackSpeed > 0 {
-            avPlayer?.rate = Float(playbackSpeed)
+        let playerSec = avPlayer?.currentTime().seconds ?? 0
+        if abs(playerSec - currentTime) > 0.05 {
+            let targetCM = CMTime(seconds: currentTime, preferredTimescale: 600)
+            avPlayer?.seek(to: targetCM, toleranceBefore: CMTime(value: 1, timescale: 30), toleranceAfter: CMTime(value: 1, timescale: 30)) { [weak self] _ in
+                guard let self = self else { return }
+                if self.isPlaying && self.playbackSpeed > 0 {
+                    self.avPlayer?.rate = Float(self.playbackSpeed)
+                }
+            }
         } else {
-            avPlayer?.pause()
+            avPlayer?.rate = Float(playbackSpeed)
         }
         
         startPlaybackDisplayTimer()
@@ -1160,54 +1290,28 @@ public final class AppState: @unchecked Sendable {
         stopPlaybackDisplayTimer()
         playbackDisplayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self = self, self.isPlaying, !self.isScrubbing else { return }
+            guard let player = self.avPlayer else { return }
             
-            let delta = (1.0 / 60.0) * self.playbackSpeed
-            let nextTime = self.currentTime + delta
-            
-            if nextTime >= self.totalDuration {
+            let playerSec = player.currentTime().seconds
+            if playerSec >= self.totalDuration {
                 self.currentTime = self.totalDuration
                 self.pauseVideo()
                 self.syncPlaybackToCurrentTime(accurate: true)
                 return
-            } else if nextTime <= 0 {
-                self.currentTime = 0
-                self.pauseVideo()
-                self.playbackSpeed = 1.0
-                self.syncPlaybackToCurrentTime(accurate: true)
-                return
             }
             
-            self.currentTime = nextTime
-            
-            // Media Source Sync (Handles cuts & gaps without constantly interrupting audio)
-            if let srcTime = self.activeSourceTime(for: nextTime) {
-                if let player = self.avPlayer {
-                    let playerSec = player.currentTime().seconds
-                    // If player stopped or drifted across a cut boundary (> 0.35s difference), resync seek
-                    if abs(playerSec - srcTime) > 0.35 || player.rate == 0 {
-                        let targetCM = CMTime(seconds: srcTime, preferredTimescale: 600)
-                        player.seek(to: targetCM, toleranceBefore: CMTime(value: 1, timescale: 30), toleranceAfter: CMTime(value: 1, timescale: 30))
-                        if self.playbackSpeed > 0 {
-                            player.rate = Float(self.playbackSpeed)
-                        }
-                    }
-                }
-            } else {
-                // Gap / Deleted clip (no video and no audio)
-                if self.avPlayer?.rate != 0 {
-                    self.avPlayer?.pause()
-                }
-            }
+            // Advance timeline smoothly locked directly to AVPlayer hardware audio clock
+            self.currentTime = max(0.0, playerSec)
             
             // Audio Track Volume / Mute Sync
-            let aSeg = self.activeAudioSegment(at: nextTime)
+            let aSeg = self.activeAudioSegment(at: self.currentTime)
             let isMute = self.isAudioMuted || aSeg == nil || (aSeg?.isMuted ?? false)
-            if self.avPlayer?.isMuted != isMute {
-                self.avPlayer?.isMuted = isMute
+            if player.isMuted != isMute {
+                player.isMuted = isMute
             }
             let targetVol = isMute ? 0.0 : Float(self.audioVolume * (aSeg?.volume ?? 1.0))
-            if self.avPlayer?.volume != targetVol {
-                self.avPlayer?.volume = targetVol
+            if player.volume != targetVol {
+                player.volume = targetVol
             }
             
             self.evaluateCurrentZoom()
@@ -1326,11 +1430,9 @@ public final class AppState: @unchecked Sendable {
         let now = ProcessInfo.processInfo.systemUptime
         if (now - lastSeekTimestamp) > 0.033 {
             lastSeekTimestamp = now
-            if let srcTime = sourceVideoTime(for: clamped) {
-                let targetCMTime = CMTime(seconds: srcTime, preferredTimescale: 600)
-                let tol = CMTime(value: 1, timescale: 30)
-                avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
-            }
+            let targetCMTime = CMTime(seconds: clamped, preferredTimescale: 600)
+            let tol = CMTime(value: 1, timescale: 30)
+            avPlayer?.seek(to: targetCMTime, toleranceBefore: tol, toleranceAfter: tol)
         }
     }
     
@@ -1417,6 +1519,7 @@ public final class AppState: @unchecked Sendable {
             undoStack.removeFirst()
         }
         redoStack.removeAll()
+        self.isDirty = true
     }
     
     public func undo() {
@@ -1453,8 +1556,10 @@ public final class AppState: @unchecked Sendable {
         self.playbackSpeed = s.playbackSpeed
         self.is3DZoomEnabled = s.is3DZoomEnabled
         self.tiltIntensity = s.tiltIntensity
+        self.isDirty = true
         
         evaluateCurrentZoom()
+        rebuildPlaybackComposition(maintainPlayhead: true)
         syncPlaybackToCurrentTime(accurate: true)
     }
     
@@ -1492,6 +1597,7 @@ public final class AppState: @unchecked Sendable {
         }
         if didChange {
             evaluateCurrentZoom()
+            rebuildPlaybackComposition(maintainPlayhead: true)
             syncPlaybackToCurrentTime(accurate: true)
         }
     }
@@ -1499,12 +1605,14 @@ public final class AppState: @unchecked Sendable {
     public func deleteVideoSegment(id: UUID) {
         recordUndoState()
         videoSegments.removeAll { $0.id == id }
+        rebuildPlaybackComposition(maintainPlayhead: true)
         syncPlaybackToCurrentTime(accurate: true)
     }
     
     public func deleteAudioSegment(id: UUID) {
         recordUndoState()
         audioSegments.removeAll { $0.id == id }
+        rebuildPlaybackComposition(maintainPlayhead: true)
         syncPlaybackToCurrentTime(accurate: true)
     }
     
@@ -1617,6 +1725,9 @@ public final class AppState: @unchecked Sendable {
             }
         }
         
+        if hasSplitAnything {
+            rebuildPlaybackComposition(maintainPlayhead: true)
+        }
         syncPlaybackToCurrentTime(accurate: true)
     }
     
@@ -1737,6 +1848,7 @@ public final class AppState: @unchecked Sendable {
     public func toggleVideoTrackVisibility() {
         recordUndoState()
         isVideoTrackHidden.toggle()
+        rebuildPlaybackComposition(maintainPlayhead: true)
         syncPlaybackToCurrentTime(accurate: true)
     }
     
@@ -1749,6 +1861,7 @@ public final class AppState: @unchecked Sendable {
     public func toggleAudioMute() {
         recordUndoState()
         isAudioMuted.toggle()
+        rebuildPlaybackComposition(maintainPlayhead: true)
         syncPlaybackToCurrentTime(accurate: true)
     }
     
@@ -1785,6 +1898,429 @@ public final class AppState: @unchecked Sendable {
         evaluateCurrentZoom()
     }
     
+    // MARK: - Project File Management (.focusproj)
+    
+    private var autosaveTimer: Timer? = nil
+    
+    public var recentProjectURLs: [URL] {
+        get {
+            let paths = UserDefaults.standard.stringArray(forKey: "recentProjects") ?? []
+            return paths.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        set {
+            let paths = newValue.map { $0.path }
+            UserDefaults.standard.set(paths, forKey: "recentProjects")
+        }
+    }
+    
+    public func addRecentProject(url: URL) {
+        var recents = recentProjectURLs
+        recents.removeAll { $0.path == url.path }
+        recents.insert(url, at: 0)
+        if recents.count > 10 {
+            recents = Array(recents.prefix(10))
+        }
+        recentProjectURLs = recents
+    }
+    
+    /// Save current project edits (⌘S or Save button). If no file chosen yet, triggers Save As.
+    @MainActor
+    public func saveProject(as saveAs: Bool = false) {
+        if !saveAs, let existingURL = currentProjectURL {
+            do {
+                try saveProjectToFile(at: existingURL)
+            } catch {
+                NSLog("[ClipFocus] Error saving project: %@", error.localizedDescription)
+                errorMessage = "Failed to save project: \(error.localizedDescription)"
+            }
+            return
+        }
+        
+        guard !isSavePanelActive else { return }
+        isSavePanelActive = true
+        
+        let savePanel = NSSavePanel()
+        if let focusType = UTType(filenameExtension: "focusproj") {
+            savePanel.allowedContentTypes = [focusType]
+        } else {
+            savePanel.allowedContentTypes = [.json]
+        }
+        savePanel.canCreateDirectories = true
+        savePanel.nameFieldStringValue = "\(projectTitle).focusproj"
+        savePanel.title = "Save ClipFocus Project"
+        
+        NSApp.activate(ignoringOtherApps: true)
+        let targetWindow = WindowManager.shared.currentEditorWindow ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
+        
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self = self else { return }
+            self.isSavePanelActive = false
+            guard response == .OK, let destinationURL = savePanel.url else { return }
+            do {
+                try self.saveProjectToFile(at: destinationURL)
+            } catch {
+                NSLog("[ClipFocus] Error saving project to file: %@", error.localizedDescription)
+                self.errorMessage = "Failed to save project: \(error.localizedDescription)"
+            }
+        }
+        
+        if let window = targetWindow, window.attachedSheet == nil {
+            window.makeKeyAndOrderFront(nil)
+            savePanel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            savePanel.begin(completionHandler: completion)
+        }
+    }
+    
+    /// Atomically serialize and save project to disk
+    @MainActor
+    public func saveProjectToFile(at destinationURL: URL) throws {
+        guard let sourceURL = recordedVideoURL else {
+            throw NSError(domain: "ClipFocus", code: 404, userInfo: [NSLocalizedDescriptionKey: "No source video associated with this project to save."])
+        }
+        
+        // Calculate relative path if video is in the same directory or child directory
+        let projectFolder = destinationURL.deletingLastPathComponent().path
+        let videoPath = sourceURL.path
+        var relPath: String? = nil
+        if videoPath.hasPrefix(projectFolder) {
+            let relativePart = String(videoPath.dropFirst(projectFolder.count))
+            relPath = relativePart.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        } else {
+            relPath = sourceURL.lastPathComponent
+        }
+        
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: videoPath))?[.size] as? Int64
+        
+        let project = ClipFocusProject(
+            title: destinationURL.deletingPathExtension().lastPathComponent,
+            schemaVersion: 1,
+            appVersion: "1.0.0",
+            createdAt: currentProjectCreatedAt ?? Date(),
+            updatedAt: Date(),
+            duration: totalDuration,
+            rawVideoFilename: videoPath,
+            relativeVideoPath: relPath,
+            videoFileSize: fileSize,
+            embeddedTelemetry: self.telemetryEvents,
+            aspectRatio: CanvasAspectRatio(rawValue: canvasRatio) ?? .widescreen16x9,
+            canvasRatioString: self.canvasRatio,
+            exportResolution: self.exportResolution,
+            backgroundStyle: CanvasBackgroundStyle(),
+            canvasPadding: self.padding,
+            canvasCornerRadius: self.roundness,
+            canvasShadowRadius: self.shadow,
+            canvasShadowOpacity: 0.35,
+            activeBackgroundIndex: self.activeBackgroundIndex,
+            activeColorIndex: self.activeColorIndex,
+            tiltIntensity: self.tiltIntensity,
+            disableZoom: self.disableZoom,
+            cursorSettings: CursorVisualSettings(),
+            webcamSettings: WebcamLayoutSettings(),
+            isAudioMuted: self.isAudioMuted,
+            audioVolume: self.audioVolume,
+            isVideoTrackHidden: self.isVideoTrackHidden,
+            isZoomTrackHidden: self.isZoomTrackHidden,
+            currentTime: self.currentTime,
+            timelineZoomScale: self.timelineZoomScale,
+            zoomKeyframes: self.zoomKeyframes,
+            subtitles: [],
+            videoSegments: self.videoSegments,
+            audioSegments: self.audioSegments
+        )
+        
+        try project.saveAtomic(to: destinationURL)
+        
+        self.currentProjectURL = destinationURL
+        self.projectTitle = destinationURL.deletingPathExtension().lastPathComponent
+        self.currentProjectCreatedAt = project.createdAt
+        self.isDirty = false
+        self.clearAutosaveRecovery()
+        
+        // Add to recent projects
+        addRecentProject(url: destinationURL)
+        
+        // Trigger visual feedback toast
+        self.showSaveSuccessToast = true
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            await MainActor.run {
+                self.showSaveSuccessToast = false
+            }
+        }
+        NSLog("[ClipFocus] Project saved successfully at %@", destinationURL.path)
+    }
+    
+    /// Present native Open dialog to choose a .focusproj project or video file
+    @MainActor
+    public func openProjectDialog() {
+        checkUnsavedChanges { [weak self] in
+            guard let self = self else { return }
+            let openPanel = NSOpenPanel()
+            let focusType = UTType(filenameExtension: "focusproj") ?? .json
+            openPanel.allowedContentTypes = [focusType, .mpeg4Movie, .quickTimeMovie, .movie]
+            openPanel.allowsMultipleSelection = false
+            openPanel.canChooseDirectories = false
+            openPanel.canChooseFiles = true
+            openPanel.title = "Open ClipFocus Project or Video"
+            openPanel.prompt = "Open"
+            
+            NSApp.activate(ignoringOtherApps: true)
+            openPanel.begin { [weak self] response in
+                guard let self = self, response == .OK, let selectedURL = openPanel.url else { return }
+                if selectedURL.pathExtension.lowercased() == "focusproj" {
+                    self.loadProject(from: selectedURL)
+                } else {
+                    self.loadRecordedVideo(url: selectedURL)
+                    self.currentView = .editor
+                    WindowManager.shared.updateWindows()
+                }
+            }
+        }
+    }
+    
+    /// Load .focusproj document and relink media
+    @MainActor
+    public func loadProject(from projectURL: URL) {
+        do {
+            let project = try ClipFocusProject.load(from: projectURL)
+            
+            // Check if source video asset exists
+            if let resolvedVideoURL = project.resolveVideoURL(relativeTo: projectURL) {
+                applyLoadedProject(project, videoURL: resolvedVideoURL, projectURL: projectURL)
+            } else {
+                // Video file missing -> smart relinking prompt
+                NSLog("[ClipFocus] Source video missing for project: %@", projectURL.path)
+                promptRelinkMissingVideo(for: project, projectURL: projectURL)
+            }
+        } catch {
+            NSLog("[ClipFocus] Failed to load project: %@", error.localizedDescription)
+            self.errorMessage = "Failed to load project: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Smart Interactive Relinking dialog when video asset was moved or renamed
+    @MainActor
+    public func promptRelinkMissingVideo(for project: ClipFocusProject, projectURL: URL) {
+        let alert = NSAlert()
+        let originalName = URL(fileURLWithPath: project.rawVideoFilename).lastPathComponent
+        alert.messageText = "Media File Missing"
+        alert.informativeText = "The source video \"\(originalName)\" could not be found at its original location.\n\nWould you like to locate and relink this media file?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Locate File...")
+        alert.addButton(withTitle: "Cancel")
+        
+        let resp = alert.runModal()
+        if resp == .alertFirstButtonReturn {
+            let openPanel = NSOpenPanel()
+            openPanel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie, .movie]
+            openPanel.allowsMultipleSelection = false
+            openPanel.canChooseDirectories = false
+            openPanel.canChooseFiles = true
+            openPanel.title = "Locate \"\(originalName)\""
+            openPanel.prompt = "Relink"
+            
+            if openPanel.runModal() == .OK, let relinkedURL = openPanel.url {
+                applyLoadedProject(project, videoURL: relinkedURL, projectURL: projectURL)
+                self.isDirty = true // Mark dirty since asset location was changed
+            }
+        }
+    }
+    
+    /// Applies a decoded project and verified video asset into editor state
+    @MainActor
+    public func applyLoadedProject(_ project: ClipFocusProject, videoURL: URL, projectURL: URL) {
+        self.cleanupEditorPlayback()
+        
+        self.currentProjectURL = projectURL
+        self.projectTitle = projectURL.deletingPathExtension().lastPathComponent
+        self.currentProjectCreatedAt = project.createdAt
+        
+        // Load base video player and telemetry
+        self.loadRecordedVideo(url: videoURL, project: project)
+        
+        // Restore all non-destructive canvas styling
+        self.canvasRatio = project.canvasRatioString
+        self.exportResolution = project.exportResolution
+        self.padding = project.canvasPadding
+        self.roundness = project.canvasCornerRadius
+        self.shadow = project.canvasShadowRadius
+        self.activeBackgroundIndex = project.activeBackgroundIndex
+        self.activeColorIndex = project.activeColorIndex
+        self.tiltIntensity = project.tiltIntensity
+        self.disableZoom = project.disableZoom
+        
+        // Restore audio & track visibility
+        self.isAudioMuted = project.isAudioMuted
+        self.audioVolume = project.audioVolume
+        self.setVolume(project.audioVolume)
+        self.isVideoTrackHidden = project.isVideoTrackHidden
+        self.isZoomTrackHidden = project.isZoomTrackHidden
+        
+        // Restore timeline view state
+        self.timelineZoomScale = project.timelineZoomScale
+        
+        // Restore embedded telemetry if present
+        if let emb = project.embeddedTelemetry, !emb.isEmpty {
+            self.telemetryEvents = emb
+        }
+        
+        self.seek(to: project.currentTime, accurate: true)
+        self.clearHistory()
+        self.isDirty = false
+        self.clearAutosaveRecovery()
+        
+        addRecentProject(url: projectURL)
+        
+        self.currentView = .editor
+        WindowManager.shared.updateWindows()
+        
+        NSLog("[ClipFocus] Project successfully loaded from: %@", projectURL.path)
+    }
+    
+    /// Checks for unsaved changes before performing destructive actions (closing, opening new project)
+    @MainActor
+    public func checkUnsavedChanges(onProceed: @escaping () -> Void) {
+        guard isDirty, currentView == .editor, recordedVideoURL != nil else {
+            onProceed()
+            return
+        }
+        
+        let alert = NSAlert()
+        alert.messageText = "Do you want to save the changes made to \"\(projectTitle)\"?"
+        alert.informativeText = "Your changes will be lost if you don't save them."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            // Save
+            if let existingURL = currentProjectURL {
+                do {
+                    try saveProjectToFile(at: existingURL)
+                    onProceed()
+                } catch {
+                    errorMessage = "Failed to save project: \(error.localizedDescription)"
+                }
+            } else {
+                saveProject(as: true)
+            }
+        case .alertSecondButtonReturn:
+            // Don't Save
+            self.isDirty = false
+            self.clearAutosaveRecovery()
+            onProceed()
+        default:
+            // Cancel -> do nothing
+            break
+        }
+    }
+    
+    /// Resets editor state and prompts to open or create a new project
+    @MainActor
+    public func newProject() {
+        checkUnsavedChanges { [weak self] in
+            guard let self = self else { return }
+            self.cleanupEditorPlayback()
+            self.recordedVideoURL = nil
+            self.currentProjectURL = nil
+            self.projectTitle = "Untitled Project"
+            self.currentProjectCreatedAt = nil
+            self.videoSegments.removeAll()
+            self.audioSegments.removeAll()
+            self.zoomKeyframes.removeAll()
+            self.telemetryEvents.removeAll()
+            self.isDirty = false
+            self.clearAutosaveRecovery()
+            self.currentView = .launcher
+            WindowManager.shared.currentEditorWindow?.orderOut(nil)
+            WindowManager.shared.updateWindows()
+            self.openProjectDialog()
+        }
+    }
+    
+    // MARK: - Background Autosave & Crash Recovery
+    
+    public func startAutosaveTimer() {
+        autosaveTimer?.invalidate()
+        autosaveTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.performAutosaveRecoverySnapshot()
+            }
+        }
+    }
+    
+    public func stopAutosaveTimer() {
+        autosaveTimer?.invalidate()
+        autosaveTimer = nil
+    }
+    
+    @MainActor
+    public func performAutosaveRecoverySnapshot() {
+        guard isDirty, currentView == .editor, let sourceURL = recordedVideoURL else { return }
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let autosaveDir = appSupport.appendingPathComponent("ClipFocus/Autosave", isDirectory: true)
+        let recoveryFile = autosaveDir.appendingPathComponent("recovery.focusproj")
+        
+        do {
+            if !fm.fileExists(atPath: autosaveDir.path) {
+                try fm.createDirectory(at: autosaveDir, withIntermediateDirectories: true)
+            }
+            let project = ClipFocusProject(
+                title: self.projectTitle,
+                schemaVersion: 1,
+                appVersion: "1.0.0",
+                createdAt: self.currentProjectCreatedAt ?? Date(),
+                updatedAt: Date(),
+                duration: self.totalDuration,
+                rawVideoFilename: sourceURL.path,
+                relativeVideoPath: sourceURL.lastPathComponent,
+                videoFileSize: (try? fm.attributesOfItem(atPath: sourceURL.path))?[.size] as? Int64,
+                embeddedTelemetry: self.telemetryEvents,
+                aspectRatio: CanvasAspectRatio(rawValue: self.canvasRatio) ?? .widescreen16x9,
+                canvasRatioString: self.canvasRatio,
+                exportResolution: self.exportResolution,
+                backgroundStyle: CanvasBackgroundStyle(),
+                canvasPadding: self.padding,
+                canvasCornerRadius: self.roundness,
+                canvasShadowRadius: self.shadow,
+                canvasShadowOpacity: 0.35,
+                activeBackgroundIndex: self.activeBackgroundIndex,
+                activeColorIndex: self.activeColorIndex,
+                tiltIntensity: self.tiltIntensity,
+                disableZoom: self.disableZoom,
+                cursorSettings: CursorVisualSettings(),
+                webcamSettings: WebcamLayoutSettings(),
+                isAudioMuted: self.isAudioMuted,
+                audioVolume: self.audioVolume,
+                isVideoTrackHidden: self.isVideoTrackHidden,
+                isZoomTrackHidden: self.isZoomTrackHidden,
+                currentTime: self.currentTime,
+                timelineZoomScale: self.timelineZoomScale,
+                zoomKeyframes: self.zoomKeyframes,
+                subtitles: [],
+                videoSegments: self.videoSegments,
+                audioSegments: self.audioSegments
+            )
+            try project.saveAtomic(to: recoveryFile)
+            NSLog("[ClipFocus] Autosave recovery snapshot written")
+        } catch {
+            NSLog("[ClipFocus] Autosave failed: %@", error.localizedDescription)
+        }
+    }
+    
+    public func clearAutosaveRecovery() {
+        let fm = FileManager.default
+        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let recoveryFile = appSupport.appendingPathComponent("ClipFocus/Autosave/recovery.focusproj")
+            try? fm.removeItem(at: recoveryFile)
+        }
+    }
+
     // MARK: - Real Video Export with Cut Composition
     
     @MainActor
@@ -1874,11 +2410,7 @@ public final class AppState: @unchecked Sendable {
                                 duration: CMTime(seconds: vSeg.duration, preferredTimescale: 600)
                             )
                             let atTime = CMTime(seconds: vSeg.timelineStartTime, preferredTimescale: 600)
-                            do {
-                                try compVideoTrack.insertTimeRange(sourceRange, of: assetVideoTrack, at: atTime)
-                            } catch {
-                                print("[Export] Warning: Failed to insert video segment \(vSeg.id): \(error)")
-                            }
+                            try compVideoTrack.insertTimeRange(sourceRange, of: assetVideoTrack, at: atTime)
                         }
                     }
                 }
@@ -1894,11 +2426,7 @@ public final class AppState: @unchecked Sendable {
                                         duration: CMTime(seconds: aSeg.duration, preferredTimescale: 600)
                                     )
                                     let atTime = CMTime(seconds: aSeg.timelineStartTime, preferredTimescale: 600)
-                                    do {
-                                        try compAudioTrack.insertTimeRange(sourceRange, of: assetAudioTrack, at: atTime)
-                                    } catch {
-                                        print("[Export] Warning: Failed to insert audio segment \(aSeg.id): \(error)")
-                                    }
+                                    try compAudioTrack.insertTimeRange(sourceRange, of: assetAudioTrack, at: atTime)
                                 }
                             }
                         }
@@ -1928,15 +2456,36 @@ public final class AppState: @unchecked Sendable {
                         }
                     }
                     
+                    var baseDimension: CGFloat = 1080.0
+                    switch self.exportResolution {
+                    case "4K":
+                        baseDimension = 2160.0
+                    case "2K":
+                        baseDimension = 1440.0
+                    case "Auto":
+                        if let assetVideoTracks = try? await asset.loadTracks(withMediaType: .video),
+                           let firstTrack = assetVideoTracks.first,
+                           let naturalSize = try? await firstTrack.load(.naturalSize) {
+                            let srcMin = min(naturalSize.width, naturalSize.height)
+                            let srcMax = max(naturalSize.width, naturalSize.height)
+                            let measured = targetRatio >= 1.0 ? srcMin : srcMax
+                            baseDimension = min(2160.0, max(1080.0, CGFloat(Int(measured) & ~1)))
+                        } else {
+                            baseDimension = 1080.0
+                        }
+                    default: // "1080p"
+                        baseDimension = 1080.0
+                    }
+                    
                     let renderWidth: CGFloat
                     let renderHeight: CGFloat
                     if targetRatio >= 1.0 {
-                        let h: CGFloat = 1080.0
+                        let h = baseDimension
                         let w = CGFloat(Int(round(h * targetRatio)) & ~1)
                         renderWidth = w
                         renderHeight = h
                     } else {
-                        let w: CGFloat = 1080.0
+                        let w = baseDimension
                         let h = CGFloat(Int(round(w / targetRatio)) & ~1)
                         renderWidth = w
                         renderHeight = h
@@ -1944,9 +2493,9 @@ public final class AppState: @unchecked Sendable {
                     let renderSize = CGSize(width: renderWidth, height: renderHeight)
                     
                     let scaleFactor = max(1.0, renderWidth / 900.0)
-                    let scaledPadding = CGFloat(self.padding) * scaleFactor * 1.5
-                    let scaledRoundness = CGFloat(self.roundness) * scaleFactor * 1.5
-                    let scaledShadow = CGFloat(self.shadow) * scaleFactor * 1.2
+                    let scaledPadding = CGFloat(self.padding) * scaleFactor
+                    let scaledRoundness = CGFloat(self.roundness) * scaleFactor
+                    let scaledShadow = CGFloat(self.shadow) * scaleFactor
                     
                     let compositorConfig = VideoCompositorConfig(
                         renderSize: renderSize,

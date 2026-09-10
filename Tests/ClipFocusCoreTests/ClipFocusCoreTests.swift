@@ -548,5 +548,362 @@ final class ClipFocusCoreTests: XCTestCase {
             prevX = focus.x
         }
     }
+    
+    // MARK: - Project Serialization & Relinking Tests
+    func testProjectSerializationAndDeserialization() throws {
+        let keyframes = [
+            ZoomKeyframe(
+                startTime: 1.0,
+                duration: 2.5,
+                focusPoint: CGPoint(x: 0.65, y: 0.35),
+                scale: 1.8,
+                effectType: .motion3D,
+                tiltPreset: .auto,
+                customPitch: 12.0,
+                customYaw: -8.0,
+                customRoll: 1.5,
+                positionOffsetX: 25.0,
+                positionOffsetY: -15.0
+            )
+        ]
+        
+        let telemetry = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.65, y: 0.35)),
+            TelemetryEvent(timestamp: 1.5, type: .mouseClick, position: CGPoint(x: 0.65, y: 0.35))
+        ]
+        
+        let videoSegments = [
+            MediaClipSegment(
+                trackType: .video,
+                name: "Clip 1",
+                sourceStartTime: 0.5,
+                timelineStartTime: 0.0,
+                duration: 4.0,
+                isMuted: false,
+                volume: 0.8
+            )
+        ]
+        
+        let project = ClipFocusProject(
+            title: "Test Project",
+            duration: 12.5,
+            rawVideoFilename: "/path/to/original.mov",
+            relativeVideoPath: "original.mov",
+            videoFileSize: 1048576,
+            embeddedTelemetry: telemetry,
+            aspectRatio: .vertical9x16,
+            canvasRatioString: "9:16",
+            canvasPadding: 32.0,
+            canvasCornerRadius: 20.0,
+            activeBackgroundIndex: 2,
+            activeColorIndex: 1,
+            tiltIntensity: 1.4,
+            disableZoom: false,
+            isAudioMuted: false,
+            audioVolume: 0.9,
+            currentTime: 2.5,
+            timelineZoomScale: 1.5,
+            zoomKeyframes: keyframes,
+            videoSegments: videoSegments
+        )
+        
+        let data = try project.encodeToData()
+        XCTAssertFalse(data.isEmpty)
+        
+        let decoded = try ClipFocusProject.decode(from: data)
+        XCTAssertEqual(decoded.title, "Test Project")
+        XCTAssertEqual(decoded.duration, 12.5, accuracy: 0.01)
+        XCTAssertEqual(decoded.canvasRatioString, "9:16")
+        XCTAssertEqual(decoded.canvasPadding, 32.0)
+        XCTAssertEqual(decoded.canvasCornerRadius, 20.0)
+        XCTAssertEqual(decoded.activeBackgroundIndex, 2)
+        XCTAssertEqual(decoded.activeColorIndex, 1)
+        XCTAssertEqual(decoded.tiltIntensity, 1.4, accuracy: 0.01)
+        XCTAssertEqual(decoded.zoomKeyframes.count, 1)
+        XCTAssertEqual(decoded.zoomKeyframes[0].scale, 1.8, accuracy: 0.01)
+        XCTAssertEqual(decoded.zoomKeyframes[0].positionOffsetX, 25.0)
+        XCTAssertEqual(decoded.zoomKeyframes[0].positionOffsetY, -15.0)
+        XCTAssertEqual(decoded.embeddedTelemetry?.count, 2)
+        XCTAssertEqual(decoded.videoSegments.count, 1)
+        XCTAssertEqual(decoded.videoSegments[0].duration, 4.0, accuracy: 0.01)
+    }
+    
+    func testProjectAtomicSaveAndLoad() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let projectFileURL = tempDir.appendingPathComponent("MySavedProject.focusproj")
+        let project = ClipFocusProject(
+            title: "Atomic Test",
+            duration: 8.0,
+            rawVideoFilename: "/dummy/video.mp4",
+            canvasRatioString: "1:1"
+        )
+        
+        try project.saveAtomic(to: projectFileURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projectFileURL.path))
+        
+        let loaded = try ClipFocusProject.load(from: projectFileURL)
+        XCTAssertEqual(loaded.title, "Atomic Test")
+        XCTAssertEqual(loaded.canvasRatioString, "1:1")
+        XCTAssertEqual(loaded.duration, 8.0, accuracy: 0.01)
+    }
+    
+    func testProjectSmartRelinking() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let projectFileURL = tempDir.appendingPathComponent("Project.focusproj")
+        let siblingVideoURL = tempDir.appendingPathComponent("recording.mov")
+        try Data("dummy video data".utf8).write(to: siblingVideoURL)
+        
+        // Scenario 1: Original absolute path was on another machine (/Users/someone_else/Desktop/recording.mov)
+        // But sibling exists in the same folder as Project.focusproj
+        let project = ClipFocusProject(
+            title: "Relink Test",
+            duration: 5.0,
+            rawVideoFilename: "/Users/someone_else/Desktop/recording.mov",
+            relativeVideoPath: "recording.mov"
+        )
+        
+        let resolvedURL = project.resolveVideoURL(relativeTo: projectFileURL)
+        XCTAssertNotNil(resolvedURL)
+        XCTAssertEqual(resolvedURL?.path, siblingVideoURL.path)
+        
+        // Scenario 2: Video does not exist anywhere -> returns nil
+        let missingProject = ClipFocusProject(
+            title: "Missing Test",
+            duration: 5.0,
+            rawVideoFilename: "/nonexistent/path/ghost.mov",
+            relativeVideoPath: "ghost.mov"
+        )
+        let missingResolved = missingProject.resolveVideoURL(relativeTo: projectFileURL)
+        XCTAssertNil(missingResolved)
+    }
+    
+    // MARK: - Frame Continuity & 3D Perspective Parity Tests
+    func testZoomInOutFrameContinuityWithoutFullscreenPops() {
+        let engine = AutoZoomEngine()
+        let kf = ZoomKeyframe(
+            startTime: 2.0,
+            duration: 3.0,
+            focusPoint: CGPoint(x: 0.3, y: 0.4),
+            scale: 2.5,
+            effectType: .motion3D,
+            tiltPreset: .custom,
+            customPitch: 13.0,
+            customYaw: 14.0,
+            positionOffsetX: 40.0,
+            positionOffsetY: -25.0
+        )
+        
+        var prevScale: CGFloat = 1.0
+        var prevPitch: Double = 0.0
+        var prevYaw: Double = 0.0
+        
+        // Sample at 60fps across the entire lifespan including zoom-in, hold, and zoom-out
+        for frame in 0...300 {
+            let t = 1.8 + Double(frame) / 60.0
+            let vp = engine.evaluateViewport(at: t, with: [kf])
+            
+            // In the middle of the zoom block (e.g. t=3.0 to 4.5), scale must never abruptly drop to 1.0
+            if t >= 2.95 && t <= 4.0 {
+                XCTAssertGreaterThan(vp.scale, 2.0, "Scale must remain fully zoomed during hold without popping to 1.0 at t=\(t)")
+                XCTAssertEqual(vp.pitch, 13.0, accuracy: 0.5, "Pitch must hold steady at 13 deg at t=\(t)")
+                XCTAssertEqual(vp.yaw, 14.0, accuracy: 0.5, "Yaw must hold steady at 14 deg at t=\(t)")
+            }
+            
+            // Frame-to-frame delta must be smooth at 60fps (max delta < 0.15 scale per frame)
+            let deltaScale = abs(vp.scale - prevScale)
+            XCTAssertLessThan(deltaScale, 0.15, "Scale change between consecutive frames must be smooth at t=\(t)")
+            
+            let deltaPitch = abs(vp.pitch - prevPitch)
+            XCTAssertLessThan(deltaPitch, 2.5, "Pitch change between consecutive frames must be smooth at t=\(t)")
+            
+            let deltaYaw = abs(vp.yaw - prevYaw)
+            XCTAssertLessThan(deltaYaw, 2.5, "Yaw change between consecutive frames must be smooth at t=\(t)")
+            
+            prevScale = vp.scale
+            prevPitch = vp.pitch
+            prevYaw = vp.yaw
+        }
+    }
+    
+    func testContinuousTelemetryInterpolationAcrossInterval() {
+        let engine = AutoZoomEngine()
+        let p0 = CGPoint(x: 0.2, y: 0.2)
+        let p1 = CGPoint(x: 0.8, y: 0.8)
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: p0),
+            TelemetryEvent(timestamp: 1.15, type: .mouseMove, position: p1)
+        ]
+        
+        // At t=1.075 (midpoint of active motion): cursor should be approximately halfway
+        let midPos = engine.cursorPosition(at: 1.075, from: events, fallback: p0)
+        XCTAssertEqual(midPos.x, 0.5, accuracy: 0.05, "Cursor should smoothly interpolate through midpoint")
+        XCTAssertEqual(midPos.y, 0.5, accuracy: 0.05, "Cursor should smoothly interpolate through midpoint")
+        
+        // Progressively increasing across the entire interval without sudden whip
+        var prevX: CGFloat = p0.x
+        for step in 1...10 {
+            let t = 1.0 + Double(step) * 0.015
+            let pos = engine.cursorPosition(at: t, from: events, fallback: p0)
+            XCTAssertGreaterThanOrEqual(pos.x, prevX, "Cursor motion must be monotonic and smooth at t=\(t)")
+            prevX = pos.x
+        }
+    }
+    
+    func testCustom3DExportFrameRendering() {
+        let pitch = 13.0
+        let yaw = 14.0
+        let roll = 0.0
+        let scale: CGFloat = 1.5
+        let fx: CGFloat = 0.5
+        let fy: CGFloat = 0.5
+        let currentPositionX: CGFloat = 20.0
+        let currentPositionY: CGFloat = -15.0
+        
+        // --- 1. PREVIEW SPACE (Cocoa / AppKit NativeVideoPlayerView) ---
+        // Artboard size e.g. 850 x 478.125 (16:9)
+        let prevArtW: CGFloat = 850.0
+        let prevArtH: CGFloat = 478.125
+        let prevPad: CGFloat = 30.0
+        let prevAvailW = prevArtW - prevPad * 2.0 // 790
+        let prevAvailH = prevArtH - prevPad * 2.0 // 418.125
+        let vRatio: CGFloat = 16.0 / 9.0
+        let prevFitByW = (prevAvailW / prevAvailH) <= vRatio
+        let prevCardW = prevFitByW ? prevAvailW : (prevAvailH * vRatio) // 743.33
+        let prevCardH = prevFitByW ? (prevAvailW / vRatio) : prevAvailH // 418.125
+        
+        let prevPanScale = prevCardW / 850.0
+        let prevTransX = (0.5 - fx) * prevCardW * scale + (currentPositionX * 2.0) * prevPanScale
+        let prevTransY = (0.5 - fy) * prevCardH * scale + (currentPositionY * 2.0) * prevPanScale
+        
+        let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)
+        let tiltRatio = min(1.0, tiltMagnitude)
+        let prevElevationZ: CGFloat = min(70.0, (scale - 1.0) * 45.0) * CGFloat(tiltRatio)
+        
+        var prevTransform = CATransform3DIdentity
+        prevTransform = CATransform3DTranslate(prevTransform, prevTransX, prevTransY, prevElevationZ)
+        prevTransform = CATransform3DScale(prevTransform, scale, scale, 1.0)
+        let radPitch = CGFloat(pitch * .pi / 180.0)
+        let radYaw = CGFloat(yaw * .pi / 180.0)
+        let radRoll = CGFloat(roll * .pi / 180.0)
+        prevTransform = CATransform3DRotate(prevTransform, radPitch, 1, 0, 0)
+        prevTransform = CATransform3DRotate(prevTransform, radYaw, 0, 1, 0)
+        prevTransform = CATransform3DRotate(prevTransform, radRoll, 0, 0, 1)
+        
+        var prevPersp = CATransform3DIdentity
+        prevPersp.m34 = -1.0 / 850.0
+        let prevCombined = CATransform3DConcat(prevTransform, prevPersp)
+        
+        // In preview, NativeVideoPlayerView is centered in Artboard:
+        let prevCenterArtX = prevArtW * 0.5
+        let prevCenterArtY = prevArtH * 0.5
+        
+        func projectPreview(x: CGFloat, y: CGFloat) -> CGPoint {
+            let px = x * prevCombined.m11 + y * prevCombined.m21 + prevCombined.m41
+            let py = x * prevCombined.m12 + y * prevCombined.m22 + prevCombined.m42
+            let pw = x * prevCombined.m14 + y * prevCombined.m24 + prevCombined.m44
+            let w = pw != 0 ? pw : 1.0
+            return CGPoint(x: prevCenterArtX + px / w, y: prevCenterArtY + py / w)
+        }
+        
+        let prevTL = projectPreview(x: -prevCardW * 0.5, y: -prevCardH * 0.5)
+        let prevTR = projectPreview(x: prevCardW * 0.5, y: -prevCardH * 0.5)
+        let prevBR = projectPreview(x: prevCardW * 0.5, y: prevCardH * 0.5)
+        let prevBL = projectPreview(x: -prevCardW * 0.5, y: prevCardH * 0.5)
+        
+        // Normalized Preview Coordinates (0.0 to 1.0 of artboard)
+        let normPrevTL = CGPoint(x: prevTL.x / prevArtW, y: prevTL.y / prevArtH)
+        let normPrevTR = CGPoint(x: prevTR.x / prevArtW, y: prevTR.y / prevArtH)
+        let normPrevBR = CGPoint(x: prevBR.x / prevArtW, y: prevBR.y / prevArtH)
+        let normPrevBL = CGPoint(x: prevBL.x / prevArtW, y: prevBL.y / prevArtH)
+        
+        print("\n--- PREVIEW NORMALIZED CORNERS ---")
+        print("TL:", normPrevTL)
+        print("TR:", normPrevTR)
+        print("BR:", normPrevBR)
+        print("BL:", normPrevBL)
+        
+        // --- 2. EXPORT SPACE WITH MATCHED PREVIEW PROJECTION MATH ---
+        let expRenderW: CGFloat = 1920.0
+        let expRenderH: CGFloat = 1080.0
+        let expScaleFactor = max(1.0, expRenderW / 900.0) // 2.1333
+        let expPad: CGFloat = prevPad * expScaleFactor
+        let expAvailW = expRenderW - expPad * 2.0
+        let expAvailH = expRenderH - expPad * 2.0
+        let expFitByW = (expAvailW / expAvailH) <= vRatio
+        let expBaseCardW = expFitByW ? expAvailW : (expAvailH * vRatio)
+        let expBaseCardH = expFitByW ? (expAvailW / vRatio) : expAvailH
+        
+        let expPanScale = expBaseCardW / 850.0
+        let expScaledPanX = (currentPositionX * 2.0) * expPanScale
+        let expScaledPanY = (currentPositionY * 2.0) * expPanScale
+        let expTransX = (0.5 - fx) * expBaseCardW * scale + expScaledPanX
+        
+        // Exact matching focal distance:
+        // In preview: focalDistance = 850.0 (where panScale = prevCardW / 850.0)
+        // Therefore: expFocalDistance = expBaseCardW / prevPanScale = expBaseCardW * (850.0 / prevCardW)
+        // Which is exactly 850.0 * expPanScale!
+        let matchedExpFocalDistance = 850.0 * expPanScale
+        var expPersp = CATransform3DIdentity
+        expPersp.m34 = -1.0 / matchedExpFocalDistance
+        
+        // In preview, transY is in flipped coords (down). In CI, Y is up.
+        // So transY in preview corresponds to -expTransY in preview flipped space:
+        let prevStyleExpTransY = (0.5 - fy) * expBaseCardH * scale + expScaledPanY
+        
+        var expTransform = CATransform3DIdentity
+        expTransform = CATransform3DTranslate(expTransform, expTransX, prevStyleExpTransY, prevElevationZ * expPanScale)
+        expTransform = CATransform3DScale(expTransform, scale, scale, 1.0)
+        expTransform = CATransform3DRotate(expTransform, radPitch, 1, 0, 0)
+        expTransform = CATransform3DRotate(expTransform, radYaw, 0, 1, 0)
+        expTransform = CATransform3DRotate(expTransform, radRoll, 0, 0, 1)
+        
+        let expCombined = CATransform3DConcat(expTransform, expPersp)
+        let expCenterCanvasX = expRenderW * 0.5
+        let expCenterCanvasY = expRenderH * 0.5
+        
+        func projectMatchedExport(x: CGFloat, y: CGFloat) -> CGPoint {
+            let px = x * expCombined.m11 + y * expCombined.m21 + expCombined.m41
+            let py = x * expCombined.m12 + y * expCombined.m22 + expCombined.m42
+            let pw = x * expCombined.m14 + y * expCombined.m24 + expCombined.m44
+            let w = pw != 0 ? pw : 1.0
+            return CGPoint(x: expCenterCanvasX + px / w, y: expCenterCanvasY + py / w)
+        }
+        
+        let expTL = projectMatchedExport(x: -expBaseCardW * 0.5, y: -expBaseCardH * 0.5)
+        let expTR = projectMatchedExport(x: expBaseCardW * 0.5, y: -expBaseCardH * 0.5)
+        let expBR = projectMatchedExport(x: expBaseCardW * 0.5, y: expBaseCardH * 0.5)
+        let expBL = projectMatchedExport(x: -expBaseCardW * 0.5, y: expBaseCardH * 0.5)
+        
+        // Convert to normalized coordinates:
+        let normExpTL = CGPoint(x: expTL.x / expRenderW, y: expTL.y / expRenderH)
+        let normExpTR = CGPoint(x: expTR.x / expRenderW, y: expTR.y / expRenderH)
+        let normExpBR = CGPoint(x: expBR.x / expRenderW, y: expBR.y / expRenderH)
+        let normExpBL = CGPoint(x: expBL.x / expRenderW, y: expBL.y / expRenderH)
+        
+        print("\n--- MATCHED EXPORT NORMALIZED CORNERS ---")
+        print("TL:", normExpTL)
+        print("TR:", normExpTR)
+        print("BR:", normExpBR)
+        print("BL:", normExpBL)
+        
+        // Verify maximum corner difference between export and preview is within 0.03 (less than 3%)
+        let diffTL = hypot(normExpTL.x - normPrevTL.x, normExpTL.y - normPrevTL.y)
+        let diffTR = hypot(normExpTR.x - normPrevTR.x, normExpTR.y - normPrevTR.y)
+        let diffBR = hypot(normExpBR.x - normPrevBR.x, normExpBR.y - normPrevBR.y)
+        let diffBL = hypot(normExpBL.x - normPrevBL.x, normExpBL.y - normPrevBL.y)
+        
+        print(String(format: "Diff magnitudes: TL=%.4f, TR=%.4f, BR=%.4f, BL=%.4f", diffTL, diffTR, diffBR, diffBL))
+        XCTAssertLessThan(diffTL, 0.03, "TL projection must match preview within 3%")
+        XCTAssertLessThan(diffTR, 0.03, "TR projection must match preview within 3%")
+        XCTAssertLessThan(diffBR, 0.03, "BR projection must match preview within 3%")
+        XCTAssertLessThan(diffBL, 0.04, "BL projection must match preview within 4%")
+    }
 }
+
 

@@ -172,37 +172,26 @@ public final class VideoCompositorEngine: Sendable {
             let fitByWidth = (availW / availH) <= vRatio
             let baseCardW = fitByWidth ? availW : (availH * vRatio)
             let baseCardH = fitByWidth ? (availW / vRatio) : availH
+            let baseCardRect = CGRect(x: 0, y: 0, width: baseCardW, height: baseCardH)
             
             // Dynamic Zoom Scale and Viewport Translation:
-            // Centering the focus point:
-            // transX = (0.5 - fx) * baseCardW * zoomScale + (viewport.positionOffsetX * 2.0)
-            // In CI (where Y=0 is at bottom), (0.5 - fy_ci) = (fy - 0.5):
-            let transX = (0.5 - fx) * baseCardW * zoomScale + (viewport.positionOffsetX * 2.0)
-            let transY = (0.5 - fy_ci) * baseCardH * zoomScale - (viewport.positionOffsetY * 2.0)
+            // Scale pan offsets proportionally based on export render resolution vs preview reference (850pt width)
+            let panScale = baseCardW / 850.0
+            let scaledPanX = (viewport.positionOffsetX * 2.0) * panScale
+            let scaledPanY = (viewport.positionOffsetY * 2.0) * panScale
             
-            let scaledCardW = baseCardW * zoomScale
-            let scaledCardH = baseCardH * zoomScale
-            let cardCenterX = renderSize.width * 0.5 + transX
-            let cardCenterY = renderSize.height * 0.5 + transY
+            let transX = (0.5 - fx) * baseCardW * zoomScale + scaledPanX
+            // In preview (Cocoa flipped coordinates), Y=0 is at top, so down is positive:
+            let transY_preview = (0.5 - fy) * baseCardH * zoomScale + scaledPanY
             
-            let cardRect = CGRect(
-                x: cardCenterX - scaledCardW * 0.5,
-                y: cardCenterY - scaledCardH * 0.5,
-                width: scaledCardW,
-                height: scaledCardH
-            )
-            
-            // 4. Transform Source Video to Fill Dynamic Card Rect
-            var videoTrans = CGAffineTransform(translationX: cardRect.origin.x, y: cardRect.origin.y)
-            videoTrans = videoTrans.scaledBy(x: cardRect.width / srcW, y: cardRect.height / srcH)
-            
+            // 4. Transform Source Video to Fill Base Card Rect
+            let videoTrans = CGAffineTransform(scaleX: baseCardW / srcW, y: baseCardH / srcH)
             let transformedVideo = sourceImage.transformed(by: videoTrans)
             
-            // 5. Generate Card Mask with Rounded Corners (scaled with zoom)
-            let cardCornerRadius = config.cornerRadius * (1.0 + (zoomScale - 1.0) * 0.25)
+            // 5. Generate Card Mask with Rounded Corners
             let rectGen = CIFilter(name: "CIRoundedRectangleGenerator")!
-            rectGen.setValue(CIVector(cgRect: cardRect), forKey: "inputExtent")
-            rectGen.setValue(cardCornerRadius, forKey: "inputRadius")
+            rectGen.setValue(CIVector(cgRect: baseCardRect), forKey: "inputExtent")
+            rectGen.setValue(config.cornerRadius, forKey: "inputRadius")
             rectGen.setValue(CIColor.white, forKey: "inputColor")
             
             guard let cardMask = rectGen.outputImage else {
@@ -216,103 +205,117 @@ public final class VideoCompositorEngine: Sendable {
             blend.setValue(cardMask, forKey: kCIInputMaskImageKey)
             blend.setValue(CIImage.empty(), forKey: kCIInputBackgroundImageKey)
             
-            guard var finalCard = blend.outputImage else {
+            guard var baseCard = blend.outputImage else {
                 request.finish(with: sourceImage, context: nil)
                 return
             }
             
-            // 6. 3D Perspective Tilt (Screen Studio / FocuSee style)
+            // 6. True 3D Perspective Projection (1:1 Exact Match with NativeVideoPlayerView CATransform3D)
             let pitch = viewport.pitch * config.tiltIntensity
             let yaw = viewport.yaw * config.tiltIntensity
             let roll = viewport.roll
             let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)
             let tiltRatio = min(1.0, tiltMagnitude)
             
-            var pBL = CGPoint(x: cardRect.minX, y: cardRect.minY)
-            var pBR = CGPoint(x: cardRect.maxX, y: cardRect.minY)
-            var pTR = CGPoint(x: cardRect.maxX, y: cardRect.maxY)
-            var pTL = CGPoint(x: cardRect.minX, y: cardRect.maxY)
-            let isTilted = abs(pitch) > 0.05 || abs(yaw) > 0.05 || abs(roll) > 0.05
+            let elevationZ = min(70.0, (zoomScale - 1.0) * 45.0) * CGFloat(tiltRatio) * panScale
             
-            if isTilted {
-                let radPitch = pitch * .pi / 180.0
-                let radYaw = yaw * .pi / 180.0
-                let radRoll = roll * .pi / 180.0
+            var cardTransform = CATransform3DIdentity
+            cardTransform = CATransform3DTranslate(cardTransform, transX, transY_preview, elevationZ)
+            cardTransform = CATransform3DScale(cardTransform, zoomScale, zoomScale, 1.0)
+            
+            let radPitch = CGFloat(pitch * .pi / 180.0)
+            let radYaw = CGFloat(yaw * .pi / 180.0)
+            let radRoll = CGFloat(roll * .pi / 180.0)
+            cardTransform = CATransform3DRotate(cardTransform, radPitch, 1, 0, 0)
+            cardTransform = CATransform3DRotate(cardTransform, radYaw, 0, 1, 0)
+            cardTransform = CATransform3DRotate(cardTransform, radRoll, 0, 0, 1)
+            
+            // Dynamic 3D lighting gradient overlay matching NativeVideoPlayerView
+            if tiltRatio > 0.05 {
+                let lightAngle = atan2(pitch, yaw)
+                let lx0 = 0.5 - cos(lightAngle) * 0.5
+                let ly0 = 0.5 - sin(lightAngle) * 0.5
+                let lx1 = 0.5 + cos(lightAngle) * 0.5
+                let ly1 = 0.5 + sin(lightAngle) * 0.5
                 
-                let hw = cardRect.width * 0.5
-                let hh = cardRect.height * 0.5
-                let cx = cardRect.midX
-                let cy = cardRect.midY
-                
-                let depthFactor = 0.32
-                let pitchSin = sin(radPitch) * depthFactor
-                let yawSin = sin(radYaw) * depthFactor
-                
-                pBL = CGPoint(x: cx - hw * (1.0 + pitchSin), y: cy - hh * (1.0 - yawSin))
-                pBR = CGPoint(x: cx + hw * (1.0 + pitchSin), y: cy - hh * (1.0 + yawSin))
-                pTR = CGPoint(x: cx + hw * (1.0 - pitchSin), y: cy + hh * (1.0 + yawSin))
-                pTL = CGPoint(x: cx - hw * (1.0 - pitchSin), y: cy + hh * (1.0 - yawSin))
-                
-                if abs(radRoll) > 0.01 {
-                    let cosR = cos(radRoll)
-                    let sinR = sin(radRoll)
-                    func rotatePt(_ p: CGPoint) -> CGPoint {
-                        let dx = p.x - cx
-                        let dy = p.y - cy
-                        return CGPoint(x: cx + dx * cosR - dy * sinR, y: cy + dx * sinR + dy * cosR)
+                let lightGrad = CIFilter(name: "CILinearGradient")!
+                lightGrad.setValue(CIVector(x: lx0 * baseCardW, y: (1.0 - ly0) * baseCardH), forKey: "inputPoint0")
+                lightGrad.setValue(CIVector(x: lx1 * baseCardW, y: (1.0 - ly1) * baseCardH), forKey: "inputPoint1")
+                lightGrad.setValue(CIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: CGFloat(tiltRatio * 0.14)), forKey: "inputColor0")
+                lightGrad.setValue(CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: CGFloat(tiltRatio * 0.22)), forKey: "inputColor1")
+                if let sheen = lightGrad.outputImage?.cropped(to: baseCardRect) {
+                    let blendLight = CIFilter(name: "CISourceOverCompositing")!
+                    blendLight.setValue(sheen, forKey: kCIInputImageKey)
+                    blendLight.setValue(baseCard, forKey: kCIInputBackgroundImageKey)
+                    if let lit = blendLight.outputImage {
+                        baseCard = lit
                     }
-                    pBL = rotatePt(pBL)
-                    pBR = rotatePt(pBR)
-                    pTR = rotatePt(pTR)
-                    pTL = rotatePt(pTL)
-                }
-                
-                let persp = CIFilter(name: "CIPerspectiveTransform")!
-                persp.setValue(finalCard, forKey: kCIInputImageKey)
-                persp.setValue(CIVector(cgPoint: pTL), forKey: "inputTopLeft")
-                persp.setValue(CIVector(cgPoint: pTR), forKey: "inputTopRight")
-                persp.setValue(CIVector(cgPoint: pBR), forKey: "inputBottomRight")
-                persp.setValue(CIVector(cgPoint: pBL), forKey: "inputBottomLeft")
-                
-                if let perspCard = persp.outputImage {
-                    finalCard = perspCard
                 }
             }
+            
+            var perspMatrix = CATransform3DIdentity
+            let focalDistance = 850.0 * panScale
+            perspMatrix.m34 = -1.0 / focalDistance
+            
+            let combined = CATransform3DConcat(cardTransform, perspMatrix)
+            let cx = renderSize.width * 0.5
+            let cy = renderSize.height * 0.5
+            
+            // Project corner (x, y) from preview space (NSView flipped, Y down) into Core Image space (Y up)
+            func projectCorner(x: CGFloat, y: CGFloat) -> CGPoint {
+                let px = x * combined.m11 + y * combined.m21 + combined.m41
+                let py = x * combined.m12 + y * combined.m22 + combined.m42
+                let pw = x * combined.m14 + y * combined.m24 + combined.m44
+                let w = pw != 0 ? pw : 1.0
+                return CGPoint(x: cx + px / w, y: cy - py / w)
+            }
+            
+            let pTL = projectCorner(x: -baseCardW * 0.5, y: -baseCardH * 0.5)
+            let pTR = projectCorner(x: baseCardW * 0.5, y: -baseCardH * 0.5)
+            let pBR = projectCorner(x: baseCardW * 0.5, y: baseCardH * 0.5)
+            let pBL = projectCorner(x: -baseCardW * 0.5, y: baseCardH * 0.5)
+            
+            let persp = CIFilter(name: "CIPerspectiveTransform")!
+            persp.setValue(baseCard, forKey: kCIInputImageKey)
+            persp.setValue(CIVector(cgPoint: pTL), forKey: "inputTopLeft")
+            persp.setValue(CIVector(cgPoint: pTR), forKey: "inputTopRight")
+            persp.setValue(CIVector(cgPoint: pBR), forKey: "inputBottomRight")
+            persp.setValue(CIVector(cgPoint: pBL), forKey: "inputBottomLeft")
+            
+            let finalCard = persp.outputImage ?? baseCard
             
             // 7. Dynamic Drop Shadow matching 3D angle and zoom scale
             var compositeCard = finalCard
             if config.shadowRadius > 2.0 {
                 let shadowGen = CIFilter(name: "CIRoundedRectangleGenerator")!
-                shadowGen.setValue(CIVector(cgRect: cardRect), forKey: "inputExtent")
-                shadowGen.setValue(cardCornerRadius, forKey: "inputRadius")
+                shadowGen.setValue(CIVector(cgRect: baseCardRect), forKey: "inputExtent")
+                shadowGen.setValue(config.cornerRadius, forKey: "inputRadius")
                 let shadowAlpha = CGFloat(0.45 + (tiltRatio * 0.20))
                 shadowGen.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: shadowAlpha), forKey: "inputColor")
                 
-                if var shadowImage = shadowGen.outputImage {
-                    // If 3D tilted, tilt the shadow shape in perspective
-                    if isTilted {
-                        let perspShadow = CIFilter(name: "CIPerspectiveTransform")!
-                        perspShadow.setValue(shadowImage, forKey: kCIInputImageKey)
-                        perspShadow.setValue(CIVector(cgPoint: pTL), forKey: "inputTopLeft")
-                        perspShadow.setValue(CIVector(cgPoint: pTR), forKey: "inputTopRight")
-                        perspShadow.setValue(CIVector(cgPoint: pBR), forKey: "inputBottomRight")
-                        perspShadow.setValue(CIVector(cgPoint: pBL), forKey: "inputBottomLeft")
-                        if let pShadow = perspShadow.outputImage {
-                            shadowImage = pShadow
+                if let shadowImage = shadowGen.outputImage {
+                    let perspShadow = CIFilter(name: "CIPerspectiveTransform")!
+                    perspShadow.setValue(shadowImage, forKey: kCIInputImageKey)
+                    perspShadow.setValue(CIVector(cgPoint: pTL), forKey: "inputTopLeft")
+                    perspShadow.setValue(CIVector(cgPoint: pTR), forKey: "inputTopRight")
+                    perspShadow.setValue(CIVector(cgPoint: pBR), forKey: "inputBottomRight")
+                    perspShadow.setValue(CIVector(cgPoint: pBL), forKey: "inputBottomLeft")
+                    
+                    if let pShadow = perspShadow.outputImage {
+                        let blur = CIFilter(name: "CIGaussianBlur")!
+                        blur.setValue(pShadow, forKey: kCIInputImageKey)
+                        let effectiveShadowRadius = (config.shadowRadius + (CGFloat(tiltRatio) * 12.0))
+                        blur.setValue(effectiveShadowRadius, forKey: kCIInputRadiusKey)
+                        
+                        if let blurredShadow = blur.outputImage {
+                            let shadowShiftX = CGFloat(-yaw * 1.5) * CGFloat(tiltRatio) * panScale
+                            let shadowShiftY = (-12.0 - CGFloat(pitch * 1.2 * tiltRatio)) * panScale
+                            let shadowShift = CGAffineTransform(translationX: shadowShiftX, y: shadowShiftY)
+                            let shiftedShadow = blurredShadow.transformed(by: shadowShift)
+                            // Crop shadow to bounded canvas extent to prevent GPU pipeline memory stall
+                            let boundedShadow = shiftedShadow.cropped(to: CGRect(origin: .zero, size: renderSize).insetBy(dx: -80, dy: -80))
+                            compositeCard = finalCard.composited(over: boundedShadow)
                         }
-                    }
-                    
-                    let blur = CIFilter(name: "CIGaussianBlur")!
-                    blur.setValue(shadowImage, forKey: kCIInputImageKey)
-                    let effectiveShadowRadius = (config.shadowRadius + (CGFloat(tiltRatio) * 12.0)) * (1.0 + (zoomScale - 1.0) * 0.25)
-                    blur.setValue(effectiveShadowRadius, forKey: kCIInputRadiusKey)
-                    
-                    if let blurredShadow = blur.outputImage {
-                        let shadowShiftX = CGFloat(-yaw * 1.5) * CGFloat(tiltRatio) * (zoomScale * 0.8)
-                        let shadowShiftY = CGFloat(-config.shadowRadius * 0.35 - (pitch * 1.2 * tiltRatio)) * (zoomScale * 0.8)
-                        let shadowShift = CGAffineTransform(translationX: shadowShiftX, y: shadowShiftY)
-                        let shiftedShadow = blurredShadow.transformed(by: shadowShift)
-                        compositeCard = finalCard.composited(over: shiftedShadow)
                     }
                 }
             }

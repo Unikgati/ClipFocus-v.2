@@ -135,6 +135,22 @@ public struct EditorStudioView: View {
                             appState.exportVideo()
                             return nil
                         }
+                    case 1: // S key with Cmd (Cmd+S = Save, Cmd+Shift+S = Save As)
+                        if event.modifierFlags.contains(.command) {
+                            let isShift = event.modifierFlags.contains(.shift)
+                            appState.saveProject(as: isShift)
+                            return nil
+                        }
+                    case 31: // O key with Cmd (Cmd+O = Open Project/Video)
+                        if event.modifierFlags.contains(.command) {
+                            appState.openProjectDialog()
+                            return nil
+                        }
+                    case 45: // N key with Cmd (Cmd+N = New Project)
+                        if event.modifierFlags.contains(.command) {
+                            appState.newProject()
+                            return nil
+                        }
                     case 11: // B key with Cmd (Cmd+B) -> Razor Cut / Split at Playhead
                         if event.modifierFlags.contains(.command) {
                             appState.splitAtCurrentTime()
@@ -262,7 +278,36 @@ public struct EditorStudioView: View {
                 }
             }
             
-            // B. Visual Style Sliders
+            // B. Export Quality & Resolution
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Export Quality")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Text(exportQualityBadge)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(Color.cyan)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.cyan.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                
+                HStack(spacing: 5) {
+                    ForEach(["1080p", "2K", "4K", "Auto"], id: \.self) { res in
+                        exportResolutionButton(res)
+                    }
+                }
+                
+                Text(exportQualityDescription)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.white.opacity(0.45))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            // C. Visual Style Sliders
             VStack(alignment: .leading, spacing: 14) {
                 Text("Frame Style")
                     .font(.system(size: 13, weight: .bold))
@@ -364,40 +409,147 @@ public struct EditorStudioView: View {
         .buttonStyle(.plain)
     }
     
+    private var exportQualityBadge: String {
+        switch appState.exportResolution {
+        case "4K": return "Ultra HD"
+        case "2K": return "Quad HD"
+        case "Auto": return "Native"
+        default: return "Full HD"
+        }
+    }
+    
+    private var exportQualityDescription: String {
+        switch appState.exportResolution {
+        case "4K": return "3840×2160 • 60 FPS • Maximum crispness for 4K displays and keynote presentations."
+        case "2K": return "2560×1440 • 60 FPS • Super sharp on Retina and QHD monitors."
+        case "Auto": return "Matches native screen recording resolution with lossless pixel density."
+        default: return "1920×1080 • 60 FPS • ~45 MB/min • Optimized for web, YouTube & fast sharing."
+        }
+    }
+    
+    @ViewBuilder
+    private func exportResolutionButton(_ res: String) -> some View {
+        let isSelected = appState.exportResolution == res
+        Button(action: {
+            appState.recordUndoState()
+            appState.exportResolution = res
+            appState.isDirty = true
+        }) {
+            Text(res)
+                .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? Color.blue : Color.white.opacity(0.08))
+                )
+                .foregroundStyle(isSelected ? .white : .secondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+    
     // MARK: - Unified Full-Width Top Title Bar
     @ViewBuilder
     private var unifiedTitleBar: some View {
         ZStack {
-            // Layer 1: True Center Brand "ClipFocus" (Level with native traffic lights at Y = 16)
-            Text("ClipFocus")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
+            // Layer 1: True Center Brand & Project Title (Level with native traffic lights at Y = 16)
+            HStack(spacing: 7) {
+                Text("ClipFocus")
+                    .font(.system(size: 13.5, weight: .bold))
+                    .foregroundStyle(.white)
+                
+                Text("—")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.30))
+                
+                HStack(spacing: 5) {
+                    Text(appState.projectTitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                        .lineLimit(1)
+                    
+                    if appState.isDirty {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                            .help("Unsaved changes")
+                    }
+                }
+            }
             
-            // Layer 2: Left Native Traffic Light Space (76px) + Right Export Action
+            // Layer 2: Left Native Traffic Light Space (76px) + Right Actions (Save & Export)
             HStack(alignment: .center) {
                 Spacer().frame(width: 76)
                 
                 Spacer()
                 
-                Button(action: {
-                    NSLog("[ClipFocus] User pressed Export button in titlebar")
-                    appState.exportVideo()
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.up.forward.square.fill")
-                        Text("Export")
+                HStack(spacing: 8) {
+                    // Save Button
+                    Button(action: {
+                        NSLog("[ClipFocus] User pressed Save button in titlebar")
+                        appState.saveProject(as: false)
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "square.and.arrow.down")
+                            Text("Save")
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(appState.isDirty ? .white : Color.white.opacity(0.65))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(appState.isDirty ? Color(red: 0.16, green: 0.20, blue: 0.30) : Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().stroke(appState.isDirty ? Color.blue.opacity(0.6) : Color.white.opacity(0.08), lineWidth: 1)
+                        )
                     }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 5)
-                    .background(Color.blue)
-                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .help("Save Project (⌘S)")
+                    
+                    // Export Button
+                    Button(action: {
+                        NSLog("[ClipFocus] User pressed Export button in titlebar")
+                        appState.exportVideo()
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.up.forward.square.fill")
+                            Text("Export")
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 5)
+                        .background(Color.blue)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .help("Export Video (⌘E)")
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
             }
             .padding(.trailing, 16)
+            
+            // Layer 3: Floating Save Toast Overlay
+            if appState.showSaveSuccessToast {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.green)
+                        .font(.system(size: 12))
+                    Text("Project Saved")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+                .background(Color(red: 0.11, green: 0.14, blue: 0.20).opacity(0.95))
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(Color.green.opacity(0.4), lineWidth: 1))
+                .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
+                .transition(.scale.combined(with: .opacity))
+            }
         }
         .frame(height: 40)
         .background(Color(red: 0.08, green: 0.09, blue: 0.12))
@@ -478,7 +630,7 @@ public struct EditorStudioView: View {
                         let fy = appState.currentFocusPoint.y
                         
                         // Background camera zoom: scales up in tandem with the video zoom and tracks focus point
-                        let bgScale = max(1.0, zoomScale)
+                        let bgScale = max(1.0, 1.0 + (zoomScale - 1.0) * 0.40)
                         let bgOffsetX = (0.5 - fx) * artboardSize.width * (bgScale - 1.0) * 0.40
                         let bgOffsetY = (0.5 - fy) * artboardSize.height * (bgScale - 1.0) * 0.40
                         
@@ -1079,7 +1231,7 @@ public struct EditorStudioView: View {
                                 }
                             }
                             .coordinateSpace(name: "TimelineTrackContainer")
-                            .frame(height: 32)
+                            .frame(width: trackWidth + 20, height: 32, alignment: .leading)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 let isShift = NSEvent.modifierFlags.contains(.shift)
@@ -1145,7 +1297,7 @@ public struct EditorStudioView: View {
                                 }
                             }
                             .coordinateSpace(name: "TimelineTrackContainer")
-                            .frame(height: 30)
+                            .frame(width: trackWidth + 20, height: 30, alignment: .leading)
                             
                             // 4. Track 3: Audio Waveform Track (Segmented Audio Clips)
                             ZStack(alignment: .leading) {
@@ -1165,7 +1317,7 @@ public struct EditorStudioView: View {
                                 }
                             }
                             .coordinateSpace(name: "TimelineTrackContainer")
-                            .frame(height: 28)
+                            .frame(width: trackWidth + 20, height: 28, alignment: .leading)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 let isShift = NSEvent.modifierFlags.contains(.shift)
@@ -1180,6 +1332,7 @@ public struct EditorStudioView: View {
                             
                             Spacer(minLength: 0)
                         }
+                        .frame(width: trackWidth + 20, alignment: .leading)
                         .padding(.top, 4)
                         
                         // Hover Gray Skimmer Line (Clean Minimalist Pin spanning full track height)
@@ -1290,53 +1443,49 @@ public struct EditorStudioView: View {
         let minorCount = Int(dur / minorStep)
         let majorCount = Int(dur / majorStep)
         
-        ZStack(alignment: .topLeading) {
-            // Horizontal baseline ruler line
-            Rectangle()
-                .fill(Color.white.opacity(0.12))
-                .frame(width: trackWidth, height: 1)
-                .offset(x: 10, y: 0)
+        Canvas { context, size in
+            // Horizontal baseline ruler line: starts exactly at x = 10, ends at x = 10 + trackWidth
+            var basePath = Path()
+            basePath.move(to: CGPoint(x: 10, y: 0.5))
+            basePath.addLine(to: CGPoint(x: 10 + trackWidth, y: 0.5))
+            context.stroke(basePath, with: .color(Color.white.opacity(0.14)), lineWidth: 1.0)
             
-            // Minor tick marks (shorter lines in between)
-            ForEach(0...minorCount, id: \.self) { i in
+            // Minor tick marks
+            var minorPath = Path()
+            for i in 0...minorCount {
                 let sec = Double(i) * minorStep
                 let rem = sec.truncatingRemainder(dividingBy: majorStep)
                 let isMajor = abs(rem) < 0.001 || abs(rem - majorStep) < 0.001
                 if !isMajor && sec <= dur {
                     let x = CGFloat(sec / dur) * trackWidth + 10
-                    Rectangle()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(width: 1, height: 3)
-                        .offset(x: x, y: 0)
+                    minorPath.move(to: CGPoint(x: x, y: 0))
+                    minorPath.addLine(to: CGPoint(x: x, y: 3.5))
                 }
             }
+            context.stroke(minorPath, with: .color(Color.white.opacity(0.20)), lineWidth: 1.0)
             
             // Major tick marks with labels
-            ForEach(0...majorCount, id: \.self) { i in
+            for i in 0...majorCount {
                 let sec = Double(i) * majorStep
                 if sec <= dur {
                     let x = CGFloat(sec / dur) * trackWidth + 10
                     
-                    // Major tick mark
-                    Rectangle()
-                        .fill(Color.white.opacity(0.40))
-                        .frame(width: 1, height: 5)
-                        .offset(x: x, y: 0)
+                    var tickPath = Path()
+                    tickPath.move(to: CGPoint(x: x, y: 0))
+                    tickPath.addLine(to: CGPoint(x: x, y: 5.5))
+                    context.stroke(tickPath, with: .color(Color.white.opacity(0.45)), lineWidth: 1.0)
                     
                     // Text label (e.g. 5s, 10s, 15s)
-                    if sec > 0.05 && (x + 12) <= (trackWidth + 16) {
-                        Text(formatRulerTime(sec))
+                    if sec > 0.05 && (x + 14) <= (trackWidth + 18) {
+                        let text = Text(formatRulerTime(sec))
                             .font(.system(size: 8.5, weight: .regular))
-                            .foregroundStyle(Color.white.opacity(0.45))
-                            .lineLimit(1)
-                            .fixedSize()
-                            .frame(width: 36)
-                            .offset(x: x - 18, y: 6)
+                            .foregroundColor(Color.white.opacity(0.45))
+                        context.draw(text, at: CGPoint(x: x, y: 8), anchor: .top)
                     }
                 }
             }
         }
-        .frame(width: trackWidth + 20, height: 18)
+        .frame(width: trackWidth + 20, height: 18, alignment: .topLeading)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -1562,6 +1711,7 @@ struct VideoClipTimelineItemView: View {
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
+                                    appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
                 }
@@ -1622,6 +1772,7 @@ struct VideoClipTimelineItemView: View {
                         .onEnded { _ in
                             appState.isScrubbing = false
                             dragStart_StartSec = nil
+                            appState.rebuildPlaybackComposition(maintainPlayhead: true)
                         }
                 )
                 
@@ -1656,6 +1807,7 @@ struct VideoClipTimelineItemView: View {
                                 .onEnded { _ in
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
+                                    appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
                 }
@@ -1679,6 +1831,7 @@ struct AudioClipTimelineItemView: View {
     @State private var isHoveringLeftHandle = false
     @State private var isHoveringRightHandle = false
     @State private var isHoveringBody = false
+    @State private var cachedBars: [Float] = []
     
     var body: some View {
         let currentSeg = appState.audioSegments.first(where: { $0.id == seg.id }) ?? seg
@@ -1706,9 +1859,9 @@ struct AudioClipTimelineItemView: View {
                         .stroke(isSelected ? Color.white : Color(red: 0.20, green: 0.85, blue: 0.65).opacity(0.35), lineWidth: isSelected ? 1.5 : 0.8)
                 )
             
-            // Professional NLE Audio Waveform Visualizer (Hardware-Accelerated Canvas)
+            // Professional NLE Audio Waveform Visualizer (Hardware-Accelerated Cached Canvas)
             GeometryReader { geo in
-                let samples = appState.audioWaveformSamples
+                let bars = cachedBars
                 
                 Canvas { context, size in
                     let midY = size.height / 2.0
@@ -1723,30 +1876,19 @@ struct AudioClipTimelineItemView: View {
                         lineWidth: 1.0
                     )
                     
-                    guard !samples.isEmpty else { return }
+                    guard !bars.isEmpty else { return }
                     
-                    // 2. Subsample corresponding to clip's source range
-                    let totalSamples = samples.count
-                    let startFraction = currentSeg.sourceStartTime / max(0.1, appState.totalDuration)
-                    let endFraction = (currentSeg.sourceStartTime + currentSeg.duration) / max(0.1, appState.totalDuration)
-                    let startIdx = Int(max(0, min(Double(totalSamples - 1), startFraction * Double(totalSamples))))
-                    let endIdx = Int(max(Double(startIdx + 1), min(Double(totalSamples), endFraction * Double(totalSamples))))
-                    let slice = Array(samples[startIdx..<endIdx])
-                    
-                    guard slice.count > 0 else { return }
-                    
-                    // Calculate step and bar width for clean NLE rendering
-                    let count = slice.count
                     let availableW = max(1.0, size.width)
-                    let step = max(1.2, availableW / CGFloat(count))
-                    let barWidth = max(1.0, min(2.5, step - 0.4))
+                    let numBars = bars.count
+                    let step = availableW / CGFloat(numBars)
+                    let barWidth = max(1.0, step - 0.7)
                     let maxAmpHeight = (size.height / 2.0) - 2.0
                     
                     var wavePath = Path()
-                    for idx in 0..<count {
-                        let amp = CGFloat(slice[idx])
+                    for (b, peakAmp) in bars.enumerated() {
+                        let amp = CGFloat(peakAmp)
                         if amp > 0.015 {
-                            let x = CGFloat(idx) * step
+                            let x = CGFloat(b) * step
                             let peakH = max(1.2, amp * maxAmpHeight)
                             let barRect = CGRect(
                                 x: x,
@@ -1763,6 +1905,9 @@ struct AudioClipTimelineItemView: View {
                 }
                 .padding(.horizontal, 8)
                 .allowsHitTesting(false)
+                .task(id: "\(currentSeg.id)_\(currentSeg.sourceStartTime)_\(currentSeg.duration)_\(Int(geo.size.width))_\(appState.audioWaveformSamples.count)") {
+                    computeWaveformBars(width: geo.size.width, currentSeg: currentSeg)
+                }
             }
             
             // 3-Zone Interactive Layout
@@ -1802,6 +1947,7 @@ struct AudioClipTimelineItemView: View {
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
+                                    appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
                 }
@@ -1855,6 +2001,7 @@ struct AudioClipTimelineItemView: View {
                         .onEnded { _ in
                             appState.isScrubbing = false
                             dragStart_StartSec = nil
+                            appState.rebuildPlaybackComposition(maintainPlayhead: true)
                         }
                 )
                 
@@ -1889,6 +2036,7 @@ struct AudioClipTimelineItemView: View {
                                 .onEnded { _ in
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
+                                    appState.rebuildPlaybackComposition(maintainPlayhead: true)
                                 }
                         )
                 }
@@ -1897,6 +2045,45 @@ struct AudioClipTimelineItemView: View {
         .frame(width: blockW, height: 28)
         .shadow(color: isSelected ? Color.green.opacity(0.4) : Color.clear, radius: 4, y: 1)
         .offset(x: xPos)
+    }
+    
+    private func computeWaveformBars(width: CGFloat, currentSeg: MediaClipSegment) {
+        let samples = appState.audioWaveformSamples
+        guard !samples.isEmpty else {
+            cachedBars = []
+            return
+        }
+        
+        let totalSamples = samples.count
+        let startFraction = max(0.0, currentSeg.sourceStartTime / max(0.1, appState.totalDuration))
+        let endFraction = min(1.0, (currentSeg.sourceStartTime + currentSeg.duration) / max(0.1, appState.totalDuration))
+        let startIdx = Int(max(0, min(Double(totalSamples - 1), startFraction * Double(totalSamples))))
+        let endIdx = Int(max(Double(startIdx + 1), min(Double(totalSamples), endFraction * Double(totalSamples))))
+        let count = endIdx - startIdx
+        guard count > 0 else {
+            cachedBars = []
+            return
+        }
+        
+        let barSpacing: CGFloat = 2.4
+        let numBars = max(1, Int(max(1.0, width) / barSpacing))
+        var bars = [Float](repeating: 0, count: numBars)
+        
+        for b in 0..<numBars {
+            let subStart = startIdx + Int(Double(b) / Double(numBars) * Double(count))
+            let subEnd = max(subStart + 1, startIdx + Int(Double(b + 1) / Double(numBars) * Double(count)))
+            let clampedEnd = min(endIdx, subEnd)
+            
+            var peakAmp: Float = 0.0
+            for s in subStart..<clampedEnd {
+                let v = samples[s]
+                if v > peakAmp {
+                    peakAmp = v
+                }
+            }
+            bars[b] = peakAmp
+        }
+        cachedBars = bars
     }
 }
 

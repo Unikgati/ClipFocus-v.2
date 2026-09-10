@@ -21,6 +21,24 @@ public struct LauncherModalView: View {
                     Spacer()
                         .frame(width: 76)
                     Spacer()
+                    
+                    Button(action: {
+                        appState.openProjectDialog()
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "folder")
+                            Text("Open Project...")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .cursorHand()
                 }
             }
             .padding(.horizontal, 18)

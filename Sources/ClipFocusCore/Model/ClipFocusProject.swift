@@ -151,18 +151,47 @@ public struct SubtitleSegment: Codable, Identifiable, Sendable {
 public struct ClipFocusProject: Codable, Identifiable, Sendable {
     public let id: UUID
     public var title: String
+    public var schemaVersion: Int
+    public var appVersion: String
     public var createdAt: Date
+    public var updatedAt: Date
     public var duration: TimeInterval
+    
+    // Asset reference and relinking data
     public var rawVideoFilename: String
+    public var relativeVideoPath: String?
+    public var videoFileSize: Int64?
     public var rawAudioFilename: String?
     public var rawWebcamFilename: String?
     public var telemetryFilename: String
+    public var embeddedTelemetry: [TelemetryEvent]?
     
     // Video Canvas & Layout configuration
     public var aspectRatio: CanvasAspectRatio
+    public var canvasRatioString: String
+    public var exportResolution: String
     public var backgroundStyle: CanvasBackgroundStyle
+    public var canvasPadding: CGFloat
+    public var canvasCornerRadius: CGFloat
+    public var canvasShadowRadius: CGFloat
+    public var canvasShadowOpacity: Double
+    public var activeBackgroundIndex: Int
+    public var activeColorIndex: Int?
+    public var tiltIntensity: Double
+    public var disableZoom: Bool
+    
     public var cursorSettings: CursorVisualSettings
     public var webcamSettings: WebcamLayoutSettings
+    
+    // Audio & Track Visibility States
+    public var isAudioMuted: Bool
+    public var audioVolume: Double
+    public var isVideoTrackHidden: Bool
+    public var isZoomTrackHidden: Bool
+    
+    // Playhead & Timeline state
+    public var currentTime: Double
+    public var timelineZoomScale: CGFloat
     
     // Non-destructive timeline keyframes & annotations
     public var zoomKeyframes: [ZoomKeyframe]
@@ -173,16 +202,38 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
     public init(
         id: UUID = UUID(),
         title: String,
+        schemaVersion: Int = 1,
+        appVersion: String = "1.0.0",
         createdAt: Date = Date(),
+        updatedAt: Date = Date(),
         duration: TimeInterval,
         rawVideoFilename: String,
+        relativeVideoPath: String? = nil,
+        videoFileSize: Int64? = nil,
         rawAudioFilename: String? = nil,
         rawWebcamFilename: String? = nil,
-        telemetryFilename: String,
+        telemetryFilename: String = "",
+        embeddedTelemetry: [TelemetryEvent]? = nil,
         aspectRatio: CanvasAspectRatio = .widescreen16x9,
+        canvasRatioString: String = "16:9",
+        exportResolution: String = "1080p",
         backgroundStyle: CanvasBackgroundStyle = CanvasBackgroundStyle(),
+        canvasPadding: CGFloat = 48.0,
+        canvasCornerRadius: CGFloat = 16.0,
+        canvasShadowRadius: CGFloat = 32.0,
+        canvasShadowOpacity: Double = 0.35,
+        activeBackgroundIndex: Int = 0,
+        activeColorIndex: Int? = nil,
+        tiltIntensity: Double = 1.0,
+        disableZoom: Bool = false,
         cursorSettings: CursorVisualSettings = CursorVisualSettings(),
         webcamSettings: WebcamLayoutSettings = WebcamLayoutSettings(),
+        isAudioMuted: Bool = false,
+        audioVolume: Double = 1.0,
+        isVideoTrackHidden: Bool = false,
+        isZoomTrackHidden: Bool = false,
+        currentTime: Double = 0.0,
+        timelineZoomScale: CGFloat = 1.0,
         zoomKeyframes: [ZoomKeyframe] = [],
         subtitles: [SubtitleSegment] = [],
         videoSegments: [MediaClipSegment] = [],
@@ -190,19 +241,164 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
     ) {
         self.id = id
         self.title = title
+        self.schemaVersion = schemaVersion
+        self.appVersion = appVersion
         self.createdAt = createdAt
+        self.updatedAt = updatedAt
         self.duration = duration
         self.rawVideoFilename = rawVideoFilename
+        self.relativeVideoPath = relativeVideoPath
+        self.videoFileSize = videoFileSize
         self.rawAudioFilename = rawAudioFilename
         self.rawWebcamFilename = rawWebcamFilename
         self.telemetryFilename = telemetryFilename
+        self.embeddedTelemetry = embeddedTelemetry
         self.aspectRatio = aspectRatio
+        self.canvasRatioString = canvasRatioString
+        self.exportResolution = exportResolution
         self.backgroundStyle = backgroundStyle
+        self.canvasPadding = canvasPadding
+        self.canvasCornerRadius = canvasCornerRadius
+        self.canvasShadowRadius = canvasShadowRadius
+        self.canvasShadowOpacity = canvasShadowOpacity
+        self.activeBackgroundIndex = activeBackgroundIndex
+        self.activeColorIndex = activeColorIndex
+        self.tiltIntensity = tiltIntensity
+        self.disableZoom = disableZoom
         self.cursorSettings = cursorSettings
         self.webcamSettings = webcamSettings
+        self.isAudioMuted = isAudioMuted
+        self.audioVolume = audioVolume
+        self.isVideoTrackHidden = isVideoTrackHidden
+        self.isZoomTrackHidden = isZoomTrackHidden
+        self.currentTime = currentTime
+        self.timelineZoomScale = timelineZoomScale
         self.zoomKeyframes = zoomKeyframes
         self.subtitles = subtitles
         self.videoSegments = videoSegments
         self.audioSegments = audioSegments
+    }
+    
+    // Custom Decodable initializer to gracefully handle schema additions
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.title = try container.decodeIfPresent(String.self, forKey: .title) ?? "Untitled Project"
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.appVersion = try container.decodeIfPresent(String.self, forKey: .appVersion) ?? "1.0.0"
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        self.duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 1.0
+        
+        self.rawVideoFilename = try container.decodeIfPresent(String.self, forKey: .rawVideoFilename) ?? ""
+        self.relativeVideoPath = try container.decodeIfPresent(String.self, forKey: .relativeVideoPath)
+        self.videoFileSize = try container.decodeIfPresent(Int64.self, forKey: .videoFileSize)
+        self.rawAudioFilename = try container.decodeIfPresent(String.self, forKey: .rawAudioFilename)
+        self.rawWebcamFilename = try container.decodeIfPresent(String.self, forKey: .rawWebcamFilename)
+        self.telemetryFilename = try container.decodeIfPresent(String.self, forKey: .telemetryFilename) ?? ""
+        self.embeddedTelemetry = try container.decodeIfPresent([TelemetryEvent].self, forKey: .embeddedTelemetry)
+        
+        self.aspectRatio = try container.decodeIfPresent(CanvasAspectRatio.self, forKey: .aspectRatio) ?? .widescreen16x9
+        self.canvasRatioString = try container.decodeIfPresent(String.self, forKey: .canvasRatioString) ?? "16:9"
+        self.exportResolution = try container.decodeIfPresent(String.self, forKey: .exportResolution) ?? "1080p"
+        self.backgroundStyle = try container.decodeIfPresent(CanvasBackgroundStyle.self, forKey: .backgroundStyle) ?? CanvasBackgroundStyle()
+        self.canvasPadding = try container.decodeIfPresent(CGFloat.self, forKey: .canvasPadding) ?? 48.0
+        self.canvasCornerRadius = try container.decodeIfPresent(CGFloat.self, forKey: .canvasCornerRadius) ?? 16.0
+        self.canvasShadowRadius = try container.decodeIfPresent(CGFloat.self, forKey: .canvasShadowRadius) ?? 32.0
+        self.canvasShadowOpacity = try container.decodeIfPresent(Double.self, forKey: .canvasShadowOpacity) ?? 0.35
+        self.activeBackgroundIndex = try container.decodeIfPresent(Int.self, forKey: .activeBackgroundIndex) ?? 0
+        self.activeColorIndex = try container.decodeIfPresent(Int.self, forKey: .activeColorIndex)
+        self.tiltIntensity = try container.decodeIfPresent(Double.self, forKey: .tiltIntensity) ?? 1.0
+        self.disableZoom = try container.decodeIfPresent(Bool.self, forKey: .disableZoom) ?? false
+        
+        self.cursorSettings = try container.decodeIfPresent(CursorVisualSettings.self, forKey: .cursorSettings) ?? CursorVisualSettings()
+        self.webcamSettings = try container.decodeIfPresent(WebcamLayoutSettings.self, forKey: .webcamSettings) ?? WebcamLayoutSettings()
+        
+        self.isAudioMuted = try container.decodeIfPresent(Bool.self, forKey: .isAudioMuted) ?? false
+        self.audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? 1.0
+        self.isVideoTrackHidden = try container.decodeIfPresent(Bool.self, forKey: .isVideoTrackHidden) ?? false
+        self.isZoomTrackHidden = try container.decodeIfPresent(Bool.self, forKey: .isZoomTrackHidden) ?? false
+        
+        self.currentTime = try container.decodeIfPresent(Double.self, forKey: .currentTime) ?? 0.0
+        self.timelineZoomScale = try container.decodeIfPresent(CGFloat.self, forKey: .timelineZoomScale) ?? 1.0
+        
+        self.zoomKeyframes = try container.decodeIfPresent([ZoomKeyframe].self, forKey: .zoomKeyframes) ?? []
+        self.subtitles = try container.decodeIfPresent([SubtitleSegment].self, forKey: .subtitles) ?? []
+        self.videoSegments = try container.decodeIfPresent([MediaClipSegment].self, forKey: .videoSegments) ?? []
+        self.audioSegments = try container.decodeIfPresent([MediaClipSegment].self, forKey: .audioSegments) ?? []
+    }
+    
+    // MARK: - Smart Asset Relinking
+    /// Resolves the video asset URL using a 3-tier intelligent lookup strategy:
+    /// 1. Absolute path verification.
+    /// 2. Relative path relative to the project document location.
+    /// 3. Same folder sibling match based on filename.
+    public func resolveVideoURL(relativeTo projectURL: URL) -> URL? {
+        let fm = FileManager.default
+        
+        // Tier 1: Direct absolute path check
+        if !rawVideoFilename.isEmpty && fm.fileExists(atPath: rawVideoFilename) {
+            return URL(fileURLWithPath: rawVideoFilename)
+        }
+        
+        let projectFolder = projectURL.deletingLastPathComponent()
+        
+        // Tier 2: Relative path check
+        if let rel = relativeVideoPath, !rel.isEmpty {
+            let candidate = projectFolder.appendingPathComponent(rel).standardizedFileURL
+            if fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        
+        // Tier 3: Same directory sibling filename match
+        let originalName = URL(fileURLWithPath: rawVideoFilename).lastPathComponent
+        if !originalName.isEmpty {
+            let siblingCandidate = projectFolder.appendingPathComponent(originalName)
+            if fm.fileExists(atPath: siblingCandidate.path) {
+                return siblingCandidate
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: - Serialization & Atomic File I/O
+    public func encodeToData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(self)
+    }
+    
+    public static func decode(from data: Data) throws -> ClipFocusProject {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ClipFocusProject.self, from: data)
+    }
+    
+    /// Writes project file atomically to prevent data corruption during power loss or disk errors
+    public func saveAtomic(to destinationURL: URL) throws {
+        let data = try encodeToData()
+        let fm = FileManager.default
+        let folder = destinationURL.deletingLastPathComponent()
+        if !fm.fileExists(atPath: folder.path) {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        
+        // Atomic write via safe temporary file
+        let tempURL = folder.appendingPathComponent(".\(destinationURL.lastPathComponent).tmp_\(UUID().uuidString)")
+        try data.write(to: tempURL, options: .atomic)
+        
+        if fm.fileExists(atPath: destinationURL.path) {
+            _ = try fm.replaceItemAt(destinationURL, withItemAt: tempURL)
+        } else {
+            try fm.moveItem(at: tempURL, to: destinationURL)
+        }
+    }
+    
+    public static func load(from url: URL) throws -> ClipFocusProject {
+        let data = try Data(contentsOf: url)
+        return try decode(from: data)
     }
 }

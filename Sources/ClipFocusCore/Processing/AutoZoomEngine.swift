@@ -476,7 +476,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
             }
             
             // 3. Hold window boundaries
-            let holdStart: TimeInterval
+            var holdStart: TimeInterval
             if let prev = prevKF {
                 let boundaryPrev = (prev.startTime + prev.duration + kf.startTime) / 2.0
                 let distPrev = hypot(kf.focusPoint.x - prev.focusPoint.x, kf.focusPoint.y - prev.focusPoint.y)
@@ -488,11 +488,23 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 holdStart = zoomInEnd
             }
             
+            // Guarantee holdStart is clamped inside keyframe active boundary
+            holdStart = min(kf.startTime + kf.duration, max(kf.startTime, holdStart))
+            
+            var effectiveMorphStart = morphStart
+            var effectiveMorphEnd = morphEnd
+            var effectiveZoomOutStart = zoomOutStart
+            var effectiveZoomOutEnd = zoomOutEnd
+            
             let holdEnd: TimeInterval
             if nextKF != nil {
-                holdEnd = morphStart
+                effectiveMorphStart = max(holdStart, morphStart)
+                effectiveMorphEnd = max(effectiveMorphStart + 0.001, morphEnd)
+                holdEnd = effectiveMorphStart
             } else {
-                holdEnd = zoomOutStart
+                effectiveZoomOutStart = max(holdStart, zoomOutStart)
+                effectiveZoomOutEnd = max(effectiveZoomOutStart + 0.001, zoomOutEnd)
+                holdEnd = effectiveZoomOutStart
             }
             
             // Skip if timestamp is before this keyframe's active range
@@ -565,12 +577,12 @@ public final class AutoZoomEngine: @unchecked Sendable {
             }
             
             // Case 3A: Seamless Camera Morph into Adjacent Successor (Zero dip to 1.0x!)
-            if let next = nextKF, time >= morphStart && time <= morphEnd {
-                let progress = (time - morphStart) / max(0.001, morphEnd - morphStart)
+            if let next = nextKF, time >= effectiveMorphStart && time <= effectiveMorphEnd {
+                let progress = (time - effectiveMorphStart) / max(0.001, effectiveMorphEnd - effectiveMorphStart)
                 let eased = easyEaseInOut(progress)
                 
-                let startFocus = smoothCameraFocus(at: morphStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
-                let endFocus = smoothCameraFocus(at: morphEnd, from: validEvents, basePoint: next.focusPoint, scale: next.scale)
+                let startFocus = smoothCameraFocus(at: effectiveMorphStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let endFocus = smoothCameraFocus(at: effectiveMorphEnd, from: validEvents, basePoint: next.focusPoint, scale: next.scale)
                 
                 let currentScale = kf.scale + (next.scale - kf.scale) * CGFloat(eased)
                 let currentFocus = CGPoint(
@@ -616,12 +628,13 @@ public final class AutoZoomEngine: @unchecked Sendable {
             }
             
             // Case 3B: Zoom Out to Full Screen (Only at the end of a sequence)
-            if !hasNextAdjacent && time >= zoomOutStart && time <= zoomOutEnd {
-                let progress = (time - zoomOutStart) / max(0.001, transOut)
+            if !hasNextAdjacent && time >= effectiveZoomOutStart && time <= effectiveZoomOutEnd {
+                let durationOut = max(0.001, effectiveZoomOutEnd - effectiveZoomOutStart)
+                let progress = (time - effectiveZoomOutStart) / durationOut
                 let eased = easyEaseInOut(progress)
                 let currentScale = kf.scale - (kf.scale - 1.0) * CGFloat(eased)
                 // Origin anchor at start of zoom-out (fixed anchor eliminates wobble during departure)
-                let startFocus = smoothCameraFocus(at: zoomOutStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
+                let startFocus = smoothCameraFocus(at: effectiveZoomOutStart, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 
                 let currentX = startFocus.x - (startFocus.x - 0.5) * CGFloat(eased)
                 let currentY = startFocus.y - (startFocus.y - 0.5) * CGFloat(eased)
