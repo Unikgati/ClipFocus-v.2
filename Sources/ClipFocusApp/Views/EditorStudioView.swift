@@ -644,10 +644,13 @@ public struct EditorStudioView: View {
                         .scaleEffect(bgScale)
                         .offset(x: bgOffsetX, y: bgOffsetY)
                         
-                        // Video Player View with 3D Cinematic Perspective & After Effects Radial Motion Blur
-                        let pad = CGFloat(appState.padding)
-                        let availW = max(180, artboardSize.width - (pad * 2.0))
-                        let availH = max(120, artboardSize.height - (pad * 2.0))
+                        // Video Player View with 3D Cinematic Perspective & Canonical Stage Reference
+                        let canonicalSize = appState.canonicalArtboardDimensions()
+                        let previewScale = artboardSize.width / canonicalSize.width
+                        
+                        let pad = CGFloat(appState.padding) * previewScale
+                        let availW = max(50, artboardSize.width - (pad * 2.0))
+                        let availH = max(50, artboardSize.height - (pad * 2.0))
                         let vRatio = max(0.2, appState.videoAspectRatio)
                         
                         // Card dimensions strictly aspect-fit the recorded video ratio so video edges touch card boundaries exactly
@@ -656,7 +659,8 @@ public struct EditorStudioView: View {
                         let cardH: CGFloat = fitByWidth ? (availW / vRatio) : availH
                         
                         let is3D = appState.currentIs3D
-                        let shadowRadius = CGFloat(appState.shadow) + (is3D ? 16.0 : 0.0)
+                        let shadowRadius = (CGFloat(appState.shadow) + (is3D ? 16.0 : 0.0)) * previewScale
+                        let cornerRadius = CGFloat(appState.roundness) * previewScale
                         let pitchAngle = appState.currentPitch
                         let yawAngle = appState.currentYaw
                         let rollAngle = appState.currentRoll
@@ -670,9 +674,10 @@ public struct EditorStudioView: View {
                             pitch: pitchAngle,
                             yaw: yawAngle,
                             roll: rollAngle,
-                            cornerRadius: CGFloat(appState.roundness),
+                            cornerRadius: cornerRadius,
                             shadowRadius: shadowRadius,
-                            is3DEnabled: is3D
+                            is3DEnabled: is3D,
+                            previewScale: previewScale
                         )
                         .frame(width: cardW, height: cardH)
                     } else {

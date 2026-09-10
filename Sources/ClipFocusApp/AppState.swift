@@ -137,6 +137,7 @@ public final class AppState: @unchecked Sendable {
     public var currentPositionX: CGFloat = 0.0
     public var currentPositionY: CGFloat = 0.0
     public var currentIs3D: Bool = false
+    public var previewArtboardSize: CGSize = .zero
     
     // FocuSee Controls
     public var disableZoom: Bool = false
@@ -2486,13 +2487,12 @@ public final class AppState: @unchecked Sendable {
                         renderHeight = h
                     } else {
                         let w = baseDimension
-                        let h = CGFloat(Int(round(w / targetRatio)) & ~1)
                         renderWidth = w
-                        renderHeight = h
+                        renderHeight = CGFloat(Int(round(w / targetRatio)) & ~1)
                     }
                     let renderSize = CGSize(width: renderWidth, height: renderHeight)
-                    
-                    let scaleFactor = max(1.0, renderWidth / 900.0)
+                    let canonicalSize = self.canonicalArtboardDimensions()
+                    let scaleFactor = renderWidth / canonicalSize.width
                     let scaledPadding = CGFloat(self.padding) * scaleFactor
                     let scaledRoundness = CGFloat(self.roundness) * scaleFactor
                     let scaledShadow = CGFloat(self.shadow) * scaleFactor
@@ -2507,7 +2507,8 @@ public final class AppState: @unchecked Sendable {
                         zoomKeyframes: self.zoomKeyframes,
                         telemetryEvents: self.telemetryEvents,
                         tiltIntensity: self.tiltIntensity,
-                        disableZoom: self.disableZoom
+                        disableZoom: self.disableZoom,
+                        scaleFactor: scaleFactor
                     )
                     
                     let videoComp = VideoCompositorEngine.shared.buildVideoComposition(
@@ -2604,6 +2605,29 @@ public final class AppState: @unchecked Sendable {
         self.currentPositionX = viewport.positionOffsetX
         self.currentPositionY = viewport.positionOffsetY
         self.currentIs3D = viewport.is3D
+    }
+    
+    /// Canonical Reference Stage Size:
+    /// Provides a deterministic, window-size-independent logical coordinate system for preview and export.
+    public func canonicalArtboardDimensions() -> CGSize {
+        let targetRatio: CGFloat
+        switch self.canvasRatio {
+        case "16:9": targetRatio = 16.0 / 9.0
+        case "9:16": targetRatio = 9.0 / 16.0
+        case "1:1": targetRatio = 1.0
+        case "4:3": targetRatio = 4.0 / 3.0
+        default: targetRatio = self.videoAspectRatio > 0 ? self.videoAspectRatio : (16.0 / 10.0)
+        }
+        
+        if targetRatio > 1.0 {
+            let w: CGFloat = 800.0
+            return CGSize(width: w, height: w / targetRatio)
+        } else if targetRatio == 1.0 {
+            return CGSize(width: 550.0, height: 550.0)
+        } else {
+            let h: CGFloat = 550.0
+            return CGSize(width: h * targetRatio, height: h)
+        }
     }
 }
 

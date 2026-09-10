@@ -19,6 +19,7 @@ public struct VideoCompositorConfig: Sendable {
     public var telemetryEvents: [TelemetryEvent]
     public var tiltIntensity: Double
     public var disableZoom: Bool
+    public var scaleFactor: CGFloat
     
     public init(
         renderSize: CGSize,
@@ -30,7 +31,8 @@ public struct VideoCompositorConfig: Sendable {
         zoomKeyframes: [ZoomKeyframe] = [],
         telemetryEvents: [TelemetryEvent] = [],
         tiltIntensity: Double = 1.0,
-        disableZoom: Bool = false
+        disableZoom: Bool = false,
+        scaleFactor: CGFloat = 1.0
     ) {
         self.renderSize = renderSize
         self.padding = padding
@@ -42,6 +44,7 @@ public struct VideoCompositorConfig: Sendable {
         self.telemetryEvents = telemetryEvents
         self.tiltIntensity = tiltIntensity
         self.disableZoom = disableZoom
+        self.scaleFactor = scaleFactor > 0 ? scaleFactor : 1.0
     }
 }
 
@@ -205,7 +208,7 @@ public final class VideoCompositorEngine: Sendable {
             blend.setValue(cardMask, forKey: kCIInputMaskImageKey)
             blend.setValue(CIImage.empty(), forKey: kCIInputBackgroundImageKey)
             
-            guard var baseCard = blend.outputImage else {
+            guard let baseCard = blend.outputImage else {
                 request.finish(with: sourceImage, context: nil)
                 return
             }
@@ -215,9 +218,10 @@ public final class VideoCompositorEngine: Sendable {
             let yaw = viewport.yaw * config.tiltIntensity
             let roll = viewport.roll
             let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)
-            let tiltRatio = min(1.0, tiltMagnitude)
+            let tiltRatio = tanh(tiltMagnitude)
             
-            let elevationZ = min(70.0, (zoomScale - 1.0) * 45.0) * CGFloat(tiltRatio) * panScale
+            let effectiveScaleFactor = config.scaleFactor > 0 ? config.scaleFactor : max(1.0, renderSize.width / 850.0)
+            let elevationZ = (zoomScale - 1.0) * 45.0 * CGFloat(tiltRatio) * effectiveScaleFactor
             
             var cardTransform = CATransform3DIdentity
             cardTransform = CATransform3DTranslate(cardTransform, transX, transY_preview, elevationZ)
@@ -230,31 +234,8 @@ public final class VideoCompositorEngine: Sendable {
             cardTransform = CATransform3DRotate(cardTransform, radYaw, 0, 1, 0)
             cardTransform = CATransform3DRotate(cardTransform, radRoll, 0, 0, 1)
             
-            // Dynamic 3D lighting gradient overlay matching NativeVideoPlayerView
-            if tiltRatio > 0.05 {
-                let lightAngle = atan2(pitch, yaw)
-                let lx0 = 0.5 - cos(lightAngle) * 0.5
-                let ly0 = 0.5 - sin(lightAngle) * 0.5
-                let lx1 = 0.5 + cos(lightAngle) * 0.5
-                let ly1 = 0.5 + sin(lightAngle) * 0.5
-                
-                let lightGrad = CIFilter(name: "CILinearGradient")!
-                lightGrad.setValue(CIVector(x: lx0 * baseCardW, y: (1.0 - ly0) * baseCardH), forKey: "inputPoint0")
-                lightGrad.setValue(CIVector(x: lx1 * baseCardW, y: (1.0 - ly1) * baseCardH), forKey: "inputPoint1")
-                lightGrad.setValue(CIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: CGFloat(tiltRatio * 0.14)), forKey: "inputColor0")
-                lightGrad.setValue(CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: CGFloat(tiltRatio * 0.22)), forKey: "inputColor1")
-                if let sheen = lightGrad.outputImage?.cropped(to: baseCardRect) {
-                    let blendLight = CIFilter(name: "CISourceOverCompositing")!
-                    blendLight.setValue(sheen, forKey: kCIInputImageKey)
-                    blendLight.setValue(baseCard, forKey: kCIInputBackgroundImageKey)
-                    if let lit = blendLight.outputImage {
-                        baseCard = lit
-                    }
-                }
-            }
-            
             var perspMatrix = CATransform3DIdentity
-            let focalDistance = 850.0 * panScale
+            let focalDistance = 850.0 * effectiveScaleFactor
             perspMatrix.m34 = -1.0 / focalDistance
             
             let combined = CATransform3DConcat(cardTransform, perspMatrix)
@@ -275,6 +256,12 @@ public final class VideoCompositorEngine: Sendable {
             let pBR = projectCorner(x: baseCardW * 0.5, y: baseCardH * 0.5)
             let pBL = projectCorner(x: -baseCardW * 0.5, y: baseCardH * 0.5)
             
+            let minX = min(pTL.x, min(pTR.x, min(pBR.x, pBL.x)))
+            let maxX = max(pTL.x, max(pTR.x, max(pBR.x, pBL.x)))
+            let minY = min(pTL.y, min(pTR.y, min(pBR.y, pBL.y)))
+            let maxY = max(pTL.y, max(pTR.y, max(pBR.y, pBL.y)))
+            let cardBounds = CGRect(x: minX, y: minY, width: max(1.0, maxX - minX), height: max(1.0, maxY - minY))
+            
             let persp = CIFilter(name: "CIPerspectiveTransform")!
             persp.setValue(baseCard, forKey: kCIInputImageKey)
             persp.setValue(CIVector(cgPoint: pTL), forKey: "inputTopLeft")
@@ -282,7 +269,7 @@ public final class VideoCompositorEngine: Sendable {
             persp.setValue(CIVector(cgPoint: pBR), forKey: "inputBottomRight")
             persp.setValue(CIVector(cgPoint: pBL), forKey: "inputBottomLeft")
             
-            let finalCard = persp.outputImage ?? baseCard
+            let finalCard = (persp.outputImage ?? baseCard).cropped(to: cardBounds.insetBy(dx: -4, dy: -4))
             
             // 7. Dynamic Drop Shadow matching 3D angle and zoom scale
             var compositeCard = finalCard
@@ -302,8 +289,10 @@ public final class VideoCompositorEngine: Sendable {
                     perspShadow.setValue(CIVector(cgPoint: pBL), forKey: "inputBottomLeft")
                     
                     if let pShadow = perspShadow.outputImage {
+                        // Crucial: Bounding pShadow before GaussianBlur prevents GPU pipeline infinite-plane stall and dropped frames
+                        let boundedPShadow = pShadow.cropped(to: cardBounds.insetBy(dx: -2, dy: -2))
                         let blur = CIFilter(name: "CIGaussianBlur")!
-                        blur.setValue(pShadow, forKey: kCIInputImageKey)
+                        blur.setValue(boundedPShadow, forKey: kCIInputImageKey)
                         let effectiveShadowRadius = (config.shadowRadius + (CGFloat(tiltRatio) * 12.0))
                         blur.setValue(effectiveShadowRadius, forKey: kCIInputRadiusKey)
                         

@@ -9,7 +9,6 @@ public final class CinematicPlayerNSView: NSView {
     public let playerLayer = AVPlayerLayer()
     private let contentLayer = CALayer()
     private let clipLayer = CALayer()
-    private let lightingLayer = CAGradientLayer()
     
     private var currentScale: CGFloat = 1.0
     private var currentFocusPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
@@ -21,6 +20,8 @@ public final class CinematicPlayerNSView: NSView {
     private var yaw: Double = 0.0
     private var roll: Double = 0.0
     private var shadowRadius: CGFloat = 24.0
+    
+    public var previewScale: CGFloat = 1.0
     
     override public var isFlipped: Bool {
         return true
@@ -47,9 +48,8 @@ public final class CinematicPlayerNSView: NSView {
         layer?.masksToBounds = false
         layer?.backgroundColor = NSColor.clear.cgColor
         
-        // Root layer defines smooth, bold 3D cinematic perspective matching FocuSee / Screen Studio
         var perspective = CATransform3DIdentity
-        perspective.m34 = -1.0 / 850.0 // True cinematic perspective focal distance with rich depth
+        perspective.m34 = -1.0 / 850.0
         layer?.sublayerTransform = perspective
         
         // Content layer represents the floating video card with 3D tilt and soft drop shadow
@@ -71,19 +71,7 @@ public final class CinematicPlayerNSView: NSView {
         playerLayer.masksToBounds = true
         playerLayer.backgroundColor = NSColor.clear.cgColor
         
-        // 3D Lighting & specular gradient overlay for realistic depth & sheen
-        lightingLayer.colors = [
-            NSColor.white.withAlphaComponent(0.14).cgColor,
-            NSColor.clear.cgColor,
-            NSColor.black.withAlphaComponent(0.24).cgColor
-        ]
-        lightingLayer.locations = [0.0, 0.45, 1.0]
-        lightingLayer.startPoint = CGPoint(x: 0.0, y: 0.0)
-        lightingLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
-        lightingLayer.opacity = 0.0
-        
         clipLayer.addSublayer(playerLayer)
-        clipLayer.addSublayer(lightingLayer)
         contentLayer.addSublayer(clipLayer)
         layer?.addSublayer(contentLayer)
     }
@@ -98,12 +86,16 @@ public final class CinematicPlayerNSView: NSView {
         
         clipLayer.frame = contentLayer.bounds
         playerLayer.frame = clipLayer.bounds
-        lightingLayer.frame = clipLayer.bounds
         updateCardTransform()
         CATransaction.commit()
     }
     
     private func updateCardTransform() {
+        var perspective = CATransform3DIdentity
+        let effectiveFocalDistance = 850.0 * previewScale
+        perspective.m34 = -1.0 / effectiveFocalDistance
+        layer?.sublayerTransform = perspective
+        
         let scale = max(1.0, currentScale)
         let fx = max(0.0, min(1.0, currentFocusPoint.x))
         let fy = max(0.0, min(1.0, currentFocusPoint.y))
@@ -113,14 +105,12 @@ public final class CinematicPlayerNSView: NSView {
         let transX = (0.5 - fx) * bounds.width * scale + (currentPositionX * 2.0) * panScale
         let transY = (0.5 - fy) * bounds.height * scale + (currentPositionY * 2.0) * panScale
         
-        // Smooth continuous 3D tilt factor (0.0 when flat, smoothly rising to 1.0 when tilted)
+        // Smooth continuous 3D tilt factor without non-differentiable clamp kinks
         let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)
-        let tiltRatio = min(1.0, tiltMagnitude)
+        let tiltRatio = tanh(tiltMagnitude)
         
-        // Dynamic 3D depth translation (Z-elevation):
-        // Elevation is proportional to tilt magnitude and scale, so when transitioning into or out of 2D (pitch=0, yaw=0),
-        // elevationZ smoothly eases to 0.0 with NO popping!
-        let elevationZ: CGFloat = min(70.0, (scale - 1.0) * 45.0) * CGFloat(tiltRatio)
+        // Dynamic 3D depth translation (Z-elevation) scaling proportionally with preview canvas
+        let elevationZ: CGFloat = (scale - 1.0) * 45.0 * CGFloat(tiltRatio) * previewScale
         
         var cardTransform = CATransform3DIdentity
         cardTransform = CATransform3DTranslate(cardTransform, transX, transY, elevationZ)
@@ -135,16 +125,6 @@ public final class CinematicPlayerNSView: NSView {
             cardTransform = CATransform3DRotate(cardTransform, radYaw, 0, 1, 0)
             cardTransform = CATransform3DRotate(cardTransform, radRoll, 0, 0, 1)
             
-            // Dynamic 3D specular lighting angle shift
-            let lightAngle = atan2(pitch, yaw)
-            let lx0 = 0.5 - cos(lightAngle) * 0.5
-            let ly0 = 0.5 - sin(lightAngle) * 0.5
-            let lx1 = 0.5 + cos(lightAngle) * 0.5
-            let ly1 = 0.5 + sin(lightAngle) * 0.5
-            lightingLayer.startPoint = CGPoint(x: lx0, y: ly0)
-            lightingLayer.endPoint = CGPoint(x: lx1, y: ly1)
-            lightingLayer.opacity = Float(tiltRatio * 0.65)
-            
             // Rich continuous multi-directional drop shadow matching 3D angle
             let shadowX = CGFloat(-yaw * 1.5) * CGFloat(tiltRatio)
             let shadowY = CGFloat(12.0 + (pitch * 1.2) * tiltRatio)
@@ -152,7 +132,6 @@ public final class CinematicPlayerNSView: NSView {
             contentLayer.shadowOpacity = Float(0.45 + (tiltRatio * 0.20))
             contentLayer.shadowRadius = CGFloat(shadowRadius + (tiltRatio * 12.0))
         } else {
-            lightingLayer.opacity = 0.0
             contentLayer.shadowOffset = CGSize(width: 0, height: 12)
             contentLayer.shadowOpacity = 0.45
             contentLayer.shadowRadius = CGFloat(shadowRadius)
@@ -172,7 +151,8 @@ public final class CinematicPlayerNSView: NSView {
         roll: Double,
         cornerRadius: CGFloat,
         shadowRadius: CGFloat,
-        is3DEnabled: Bool
+        is3DEnabled: Bool,
+        previewScale: CGFloat = 1.0
     ) {
         if playerLayer.player !== player {
             playerLayer.player = player
@@ -187,6 +167,7 @@ public final class CinematicPlayerNSView: NSView {
         self.roll = roll
         self.shadowRadius = shadowRadius
         self.is3DEnabled = is3DEnabled
+        self.previewScale = previewScale
         
         clipLayer.cornerRadius = cornerRadius
         playerLayer.cornerRadius = cornerRadius
@@ -210,6 +191,7 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
     public var cornerRadius: CGFloat = 12.0
     public var shadowRadius: CGFloat = 20.0
     public var is3DEnabled: Bool = true
+    public var previewScale: CGFloat = 1.0
 
     public init(
         player: AVPlayer,
@@ -222,7 +204,8 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
         roll: Double = 0.0,
         cornerRadius: CGFloat = 12.0,
         shadowRadius: CGFloat = 20.0,
-        is3DEnabled: Bool = true
+        is3DEnabled: Bool = true,
+        previewScale: CGFloat = 1.0
     ) {
         self.player = player
         self.scale = scale
@@ -235,6 +218,7 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
         self.cornerRadius = cornerRadius
         self.shadowRadius = shadowRadius
         self.is3DEnabled = is3DEnabled
+        self.previewScale = previewScale
     }
 
     public func makeNSView(context: Context) -> CinematicPlayerNSView {
@@ -250,7 +234,8 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
             roll: roll,
             cornerRadius: cornerRadius,
             shadowRadius: shadowRadius,
-            is3DEnabled: is3DEnabled
+            is3DEnabled: is3DEnabled,
+            previewScale: previewScale
         )
         return view
     }
@@ -267,7 +252,8 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
             roll: roll,
             cornerRadius: cornerRadius,
             shadowRadius: shadowRadius,
-            is3DEnabled: is3DEnabled
+            is3DEnabled: is3DEnabled,
+            previewScale: previewScale
         )
     }
 }

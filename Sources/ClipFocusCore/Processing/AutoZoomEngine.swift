@@ -672,11 +672,11 @@ public final class AutoZoomEngine: @unchecked Sendable {
         return .fullScreen
     }
     
-    /// Cinematic Quintic Easy-Ease function (matching After Effects / FocuSee camera moves)
-    /// Smooth velocity at start (0 acceleration jerk), energetic glide, and velvet-smooth asymptotic landing.
+    /// Cinematic Cubic Easy-Ease function (matching After Effects / Screen Studio camera moves)
+    /// Smooth velocity at start (zero velocity jerk), immediate natural response without 150ms deadzone, and velvety landing.
     private func easyEaseInOut(_ t: Double) -> Double {
         let x = min(max(t, 0.0), 1.0)
-        // Quintic smoothstep: 6x^5 - 15x^4 + 10x^3
-        return x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+        // Cubic smoothstep: 3x^2 - 2x^3 provides smooth velocity without quintic freezing lag
+        return x * x * (3.0 - 2.0 * x)
     }
 }

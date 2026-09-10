@@ -782,8 +782,8 @@ final class ClipFocusCoreTests: XCTestCase {
         let prevTransY = (0.5 - fy) * prevCardH * scale + (currentPositionY * 2.0) * prevPanScale
         
         let tiltMagnitude = hypot(pitch / 16.0, yaw / 16.0)
-        let tiltRatio = min(1.0, tiltMagnitude)
-        let prevElevationZ: CGFloat = min(70.0, (scale - 1.0) * 45.0) * CGFloat(tiltRatio)
+        let tiltRatio = tanh(tiltMagnitude)
+        let prevElevationZ: CGFloat = (scale - 1.0) * 45.0 * CGFloat(tiltRatio)
         
         var prevTransform = CATransform3DIdentity
         prevTransform = CATransform3DTranslate(prevTransform, prevTransX, prevTransY, prevElevationZ)
@@ -831,13 +831,13 @@ final class ClipFocusCoreTests: XCTestCase {
         // --- 2. EXPORT SPACE WITH MATCHED PREVIEW PROJECTION MATH ---
         let expRenderW: CGFloat = 1920.0
         let expRenderH: CGFloat = 1080.0
-        let expScaleFactor = max(1.0, expRenderW / 900.0) // 2.1333
+        let expScaleFactor: CGFloat = expRenderW / prevArtW
         let expPad: CGFloat = prevPad * expScaleFactor
-        let expAvailW = expRenderW - expPad * 2.0
-        let expAvailH = expRenderH - expPad * 2.0
-        let expFitByW = (expAvailW / expAvailH) <= vRatio
-        let expBaseCardW = expFitByW ? expAvailW : (expAvailH * vRatio)
-        let expBaseCardH = expFitByW ? (expAvailW / vRatio) : expAvailH
+        let expAvailW: CGFloat = expRenderW - expPad * 2.0
+        let expAvailH: CGFloat = expRenderH - expPad * 2.0
+        let expFitByW: Bool = (expAvailW / expAvailH) <= vRatio
+        let expBaseCardW: CGFloat = expFitByW ? expAvailW : (expAvailH * vRatio)
+        let expBaseCardH: CGFloat = expFitByW ? (expAvailW / vRatio) : expAvailH
         
         let expPanScale = expBaseCardW / 850.0
         let expScaledPanX = (currentPositionX * 2.0) * expPanScale
@@ -845,10 +845,9 @@ final class ClipFocusCoreTests: XCTestCase {
         let expTransX = (0.5 - fx) * expBaseCardW * scale + expScaledPanX
         
         // Exact matching focal distance:
-        // In preview: focalDistance = 850.0 (where panScale = prevCardW / 850.0)
-        // Therefore: expFocalDistance = expBaseCardW / prevPanScale = expBaseCardW * (850.0 / prevCardW)
-        // Which is exactly 850.0 * expPanScale!
-        let matchedExpFocalDistance = 850.0 * expPanScale
+        // In preview: focalDistance = 850.0 (where perspective.m34 = -1.0 / 850.0)
+        // In export: camera distance scales identically with the canvas: 850.0 * expScaleFactor
+        let matchedExpFocalDistance = 850.0 * expScaleFactor
         var expPersp = CATransform3DIdentity
         expPersp.m34 = -1.0 / matchedExpFocalDistance
         
@@ -857,7 +856,7 @@ final class ClipFocusCoreTests: XCTestCase {
         let prevStyleExpTransY = (0.5 - fy) * expBaseCardH * scale + expScaledPanY
         
         var expTransform = CATransform3DIdentity
-        expTransform = CATransform3DTranslate(expTransform, expTransX, prevStyleExpTransY, prevElevationZ * expPanScale)
+        expTransform = CATransform3DTranslate(expTransform, expTransX, prevStyleExpTransY, prevElevationZ * expScaleFactor)
         expTransform = CATransform3DScale(expTransform, scale, scale, 1.0)
         expTransform = CATransform3DRotate(expTransform, radPitch, 1, 0, 0)
         expTransform = CATransform3DRotate(expTransform, radYaw, 0, 1, 0)
@@ -892,17 +891,17 @@ final class ClipFocusCoreTests: XCTestCase {
         print("BR:", normExpBR)
         print("BL:", normExpBL)
         
-        // Verify maximum corner difference between export and preview is within 0.03 (less than 3%)
+        // Exact mathematical alignment: corner differences are near-zero (< 0.005)
         let diffTL = hypot(normExpTL.x - normPrevTL.x, normExpTL.y - normPrevTL.y)
         let diffTR = hypot(normExpTR.x - normPrevTR.x, normExpTR.y - normPrevTR.y)
         let diffBR = hypot(normExpBR.x - normPrevBR.x, normExpBR.y - normPrevBR.y)
         let diffBL = hypot(normExpBL.x - normPrevBL.x, normExpBL.y - normPrevBL.y)
         
-        print(String(format: "Diff magnitudes: TL=%.4f, TR=%.4f, BR=%.4f, BL=%.4f", diffTL, diffTR, diffBR, diffBL))
-        XCTAssertLessThan(diffTL, 0.03, "TL projection must match preview within 3%")
-        XCTAssertLessThan(diffTR, 0.03, "TR projection must match preview within 3%")
-        XCTAssertLessThan(diffBR, 0.03, "BR projection must match preview within 3%")
-        XCTAssertLessThan(diffBL, 0.04, "BL projection must match preview within 4%")
+        print(String(format: "Diff magnitudes: TL=%.6f, TR=%.6f, BR=%.6f, BL=%.6f", diffTL, diffTR, diffBR, diffBL))
+        XCTAssertLessThan(diffTL, 0.005, "TL projection must match preview perfectly")
+        XCTAssertLessThan(diffTR, 0.005, "TR projection must match preview perfectly")
+        XCTAssertLessThan(diffBR, 0.005, "BR projection must match preview perfectly")
+        XCTAssertLessThan(diffBL, 0.005, "BL projection must match preview perfectly")
     }
 }
 
