@@ -852,10 +852,8 @@ public struct EditorStudioView: View {
                     }) {
                         Image(systemName: "number")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(appState.showRuleOfThirds ? Color.cyan : Color.white.opacity(0.85))
+                            .foregroundStyle(appState.showRuleOfThirds ? Color.cyan : Color.white.opacity(0.45))
                             .frame(width: 24, height: 24)
-                            .background(appState.showRuleOfThirds ? Color.cyan.opacity(0.18) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -869,8 +867,6 @@ public struct EditorStudioView: View {
                     }) {
                         MagnetIcon(isActive: appState.isSnappingEnabled)
                             .frame(width: 24, height: 24)
-                            .background(appState.isSnappingEnabled ? Color.yellow.opacity(0.18) : Color.white.opacity(0.04))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
