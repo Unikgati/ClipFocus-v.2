@@ -111,10 +111,27 @@ public final class CursorTracker: @unchecked Sendable {
         self.lastSampledPosition = position
         self.lastRecordedTimestamp = timestamp
         
+        var resolvedCursor: CursorType = .arrow
+        if NSEvent.pressedMouseButtons != 0 {
+            resolvedCursor = .closedHand
+        } else {
+            let cursor = NSCursor.current
+            if cursor == NSCursor.iBeam {
+                resolvedCursor = .iBeam
+            } else if cursor == NSCursor.pointingHand {
+                resolvedCursor = .pointingHand
+            } else if cursor == NSCursor.openHand {
+                resolvedCursor = .openHand
+            } else if cursor == NSCursor.closedHand {
+                resolvedCursor = .closedHand
+            }
+        }
+        
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,
             type: .mouseMove,
-            position: position
+            position: position,
+            cursorType: resolvedCursor
         )
         recordEvent(telemetryEvent)
     }
@@ -163,13 +180,28 @@ public final class CursorTracker: @unchecked Sendable {
         
         let button: MouseButtonType = (event.type == .rightMouseDown || event.type == .rightMouseDragged) ? .right : .left
         
+        var cursorType: CursorType = (type == .mouseDrag) ? .closedHand : .arrow
+        if type != .mouseDrag {
+            let cursor = NSCursor.current
+            if cursor == NSCursor.iBeam {
+                cursorType = .iBeam
+            } else if cursor == NSCursor.pointingHand {
+                cursorType = .pointingHand
+            } else if cursor == NSCursor.openHand {
+                cursorType = .openHand
+            } else if cursor == NSCursor.closedHand {
+                cursorType = .closedHand
+            }
+        }
+        
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,
             type: type,
             position: position,
             button: button,
             clickCount: event.clickCount,
-            modifierFlags: event.modifierFlags.rawValue
+            modifierFlags: event.modifierFlags.rawValue,
+            cursorType: cursorType
         )
         
         recordEvent(telemetryEvent)

@@ -24,6 +24,8 @@ public final class CaptureManager: @unchecked Sendable {
     private var lastResumeTime: Date?
     private var pauseDate: Date?
     
+    public var captureHardwareCursor: Bool = false
+    
     public init() {
         checkPermissions()
     }
@@ -97,7 +99,7 @@ public final class CaptureManager: @unchecked Sendable {
             captureSystemAudio: captureSystemAudio,
             captureMicrophoneAudio: captureMicrophoneAudio,
             targetMicrophoneName: targetMicrophoneName,
-            showHardwareCursor: true, // Native hardware cursor captured crisply in video stream
+            showHardwareCursor: captureHardwareCursor, // Screen Studio / FocuSee style: clean video stream for vector cursor overlay
             sourceRect: sourceRect,
             targetWindowID: targetWindowID,
             excludedWindowIDs: excludedWindowIDs

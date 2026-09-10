@@ -140,6 +140,82 @@ public final class AppState: @unchecked Sendable {
     public var currentIs3D: Bool = false
     public var previewArtboardSize: CGSize = .zero
     
+    // Screen Studio / FocuSee Style Custom Vector Cursor Settings
+    public var isCursorOverlayEnabled: Bool = true { didSet { self.isDirty = true } }
+    public var cursorScale: CGFloat = 1.35 { didSet { self.isDirty = true } } // 1.0x to 2.5x
+    public var isClickRippleEnabled: Bool = true { didSet { self.isDirty = true } }
+    public var autoHideIdleCursor: Bool = true { didSet { self.isDirty = true } }
+    
+    /// Evaluates cursor position, type, and click animation progress at a specific timeline timestamp
+    public func cursorState(at time: Double) -> (position: CGPoint, type: CursorType, clickProgress: Double?, isRightClick: Bool, opacity: Double)? {
+        guard isCursorOverlayEnabled, !telemetryEvents.isEmpty else { return nil }
+        
+        let mouseEvents = telemetryEvents.filter {
+            $0.type == .mouseMove || $0.type == .mouseClick || $0.type == .mouseDrag
+        }
+        guard !mouseEvents.isEmpty else { return nil }
+        
+        var prevEvent: TelemetryEvent? = nil
+        var nextEvent: TelemetryEvent? = nil
+        
+        for ev in mouseEvents {
+            if ev.timestamp <= time {
+                prevEvent = ev
+            } else {
+                nextEvent = ev
+                break
+            }
+        }
+        
+        guard let prev = prevEvent ?? mouseEvents.first, let pos1 = prev.position else {
+            return nil
+        }
+        
+        var opacity: Double = 1.0
+        let idleThreshold: TimeInterval = 2.0
+        let timeSinceLastMove = time - prev.timestamp
+        if autoHideIdleCursor && timeSinceLastMove > idleThreshold {
+            if let next = nextEvent {
+                let timeUntilNext = next.timestamp - time
+                if timeUntilNext < 0.3 {
+                    opacity = max(0.0, min(1.0, 1.0 - (timeUntilNext / 0.3)))
+                } else {
+                    return nil
+                }
+            } else {
+                return nil
+            }
+        }
+        
+        var finalPos = pos1
+        if let next = nextEvent, let pos2 = next.position {
+            let interval = next.timestamp - prev.timestamp
+            if interval > 0.001 && interval < 0.15 {
+                let factor = (time - prev.timestamp) / interval
+                let clampedFactor = max(0.0, min(1.0, factor))
+                finalPos = CGPoint(
+                    x: pos1.x + (pos2.x - pos1.x) * clampedFactor,
+                    y: pos1.y + (pos2.y - pos1.y) * clampedFactor
+                )
+            }
+        }
+        
+        let type = prev.cursorType ?? .arrow
+        
+        var clickProgress: Double? = nil
+        var isRight = false
+        if isClickRippleEnabled {
+            if let clickEv = telemetryEvents.last(where: {
+                $0.type == .mouseClick && time >= $0.timestamp && time <= ($0.timestamp + 0.40)
+            }) {
+                clickProgress = (time - clickEv.timestamp) / 0.40
+                isRight = (clickEv.button == .right)
+            }
+        }
+        
+        return (finalPos, type, clickProgress, isRight, opacity)
+    }
+    
     // FocuSee Controls
     public var disableZoom: Bool = false
     public var selectedEffectType: ZoomEffectType = .zoom2D
@@ -2636,7 +2712,11 @@ public final class AppState: @unchecked Sendable {
                         telemetryEvents: self.telemetryEvents,
                         tiltIntensity: self.tiltIntensity,
                         disableZoom: self.disableZoom,
-                        scaleFactor: scaleFactor
+                        scaleFactor: scaleFactor,
+                        isCursorOverlayEnabled: self.isCursorOverlayEnabled,
+                        cursorScale: self.cursorScale,
+                        isClickRippleEnabled: self.isClickRippleEnabled,
+                        autoHideIdleCursor: self.autoHideIdleCursor
                     )
                     
                     let videoComp = VideoCompositorEngine.shared.buildVideoComposition(

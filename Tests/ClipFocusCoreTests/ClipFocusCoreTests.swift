@@ -903,6 +903,75 @@ final class ClipFocusCoreTests: XCTestCase {
         XCTAssertLessThan(diffBR, 0.005, "BR projection must match preview perfectly")
         XCTAssertLessThan(diffBL, 0.005, "BL projection must match preview perfectly")
     }
+    
+    func testCustomCursorRendererAndTelemetry() throws {
+        // 1. Verify TelemetryEvent serialization with CursorType
+        let event = TelemetryEvent(
+            timestamp: 1.25,
+            type: .mouseMove,
+            position: CGPoint(x: 0.5, y: 0.5),
+            cursorType: .pointingHand
+        )
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(event)
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(TelemetryEvent.self, from: data)
+        XCTAssertEqual(decoded.cursorType, .pointingHand)
+        
+        // 2. Verify Hotspots
+        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .arrow, size: 100), CGPoint(x: 1.0, y: 1.0))
+        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .iBeam, size: 100), CGPoint(x: 35.0, y: 50.0))
+        let pointingHotspot = CustomCursorRenderer.hotspot(for: .pointingHand, size: 100)
+        XCTAssertEqual(pointingHotspot.x, 28.0, accuracy: 0.001)
+        XCTAssertEqual(pointingHotspot.y, 1.0, accuracy: 0.001)
+        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .closedHand, size: 100), CGPoint(x: 45.0, y: 45.0))
+        
+        // 3. Verify Vector Paths Non-Empty
+        let arrowPath = CustomCursorRenderer.createModernArrowPath(size: 32)
+        XCTAssertFalse(arrowPath.isEmpty)
+        let ibeamPath = CustomCursorRenderer.createIBeamPath(size: 32)
+        XCTAssertFalse(ibeamPath.isEmpty)
+        let handPath = CustomCursorRenderer.createPointingHandPath(size: 32)
+        XCTAssertFalse(handPath.isEmpty)
+        let closedPath = CustomCursorRenderer.createClosedHandPath(size: 32)
+        XCTAssertFalse(closedPath.isEmpty)
+        
+        // 4. Verify Drawing into CGContext
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: 100,
+            height: 100,
+            bitsPerComponent: 8,
+            bytesPerRow: 400,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            XCTFail("Failed to create test CGContext")
+            return
+        }
+        
+        CustomCursorRenderer.drawCursor(
+            in: ctx,
+            at: CGPoint(x: 50, y: 50),
+            type: .arrow,
+            size: 32,
+            clickProgress: 0.5,
+            isRightClick: false
+        )
+        
+        // 5. Verify Compositor Cursor State Evaluation
+        let telemetryEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.2, y: 0.2), cursorType: .arrow),
+            TelemetryEvent(timestamp: 1.5, type: .mouseClick, position: CGPoint(x: 0.25, y: 0.25), button: .left, cursorType: .pointingHand),
+            TelemetryEvent(timestamp: 3.0, type: .mouseMove, position: CGPoint(x: 0.3, y: 0.3), cursorType: .arrow)
+        ]
+        
+        let state1 = VideoCompositorEngine.evaluateCursorState(at: 1.52, events: telemetryEvents, autoHideIdle: false, clickRipple: true)
+        XCTAssertNotNil(state1)
+        XCTAssertEqual(state1?.type, .pointingHand)
+        XCTAssertGreaterThan(state1?.clickProgress ?? 0, 0)
+    }
 }
 
 
