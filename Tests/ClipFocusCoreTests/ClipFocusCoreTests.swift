@@ -919,14 +919,16 @@ final class ClipFocusCoreTests: XCTestCase {
         XCTAssertEqual(decoded.cursorType, .pointingHand)
         
         // 2. Verify Hotspots
-        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .arrow, size: 100), CGPoint(x: 1.0, y: 1.0))
+        let arrowHotspot = CustomCursorRenderer.hotspot(for: .arrow, size: 100)
+        XCTAssertEqual(arrowHotspot.x, 100.0 * (84.1 / 256.0), accuracy: 0.001)
+        XCTAssertEqual(arrowHotspot.y, 100.0 * (48.56 / 256.0), accuracy: 0.001)
         let ibeamHotspot = CustomCursorRenderer.hotspot(for: .iBeam, size: 100)
-        XCTAssertEqual(ibeamHotspot.x, 100.0 * (10.0 / 24.0), accuracy: 0.001)
+        XCTAssertEqual(ibeamHotspot.x, 50.0, accuracy: 0.001)
         XCTAssertEqual(ibeamHotspot.y, 50.0, accuracy: 0.001)
         let pointingHotspot = CustomCursorRenderer.hotspot(for: .pointingHand, size: 100)
-        XCTAssertEqual(pointingHotspot.x, 100.0 * (8.5 / 24.0), accuracy: 0.001)
-        XCTAssertEqual(pointingHotspot.y, 1.5, accuracy: 0.001)
-        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .closedHand, size: 100), CGPoint(x: 45.0, y: 45.0))
+        XCTAssertEqual(pointingHotspot.x, 100.0 * (89.5 / 257.0), accuracy: 0.001)
+        XCTAssertEqual(pointingHotspot.y, 100.0 * (41.5 / 257.0), accuracy: 0.001)
+        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .closedHand, size: 100), CGPoint(x: 50.0, y: 50.0))
         
         // 3. Verify Vector Paths Non-Empty
         let arrowPath = CustomCursorRenderer.createModernArrowPath(size: 32)
