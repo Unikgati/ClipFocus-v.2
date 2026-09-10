@@ -582,8 +582,11 @@ public struct EditorStudioView: View {
             
             // Back to launcher button at bottom
             Button(action: {
-                appState.cleanupEditorPlayback()
-                appState.currentView = .launcher
+                appState.checkUnsavedChanges {
+                    appState.cleanupEditorPlayback()
+                    appState.currentView = .launcher
+                    WindowManager.shared.updateWindows()
+                }
             }) {
                 Image(systemName: "arrow.left.circle")
                     .font(.system(size: 18))

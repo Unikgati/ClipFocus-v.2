@@ -730,17 +730,14 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             appState?.showPermissionsWindow = false
             return false
         } else if sender == editorWindow {
-            if let app = appState, app.isDirty {
+            if let app = appState {
                 app.checkUnsavedChanges { [weak self] in
                     self?.appState?.cleanupEditorPlayback()
                     self?.appState?.currentView = .launcher
                     self?.editorWindow?.orderOut(nil)
                     self?.updateWindows()
                 }
-                return false
             }
-            appState?.cleanupEditorPlayback()
-            appState?.currentView = .launcher
             return false
         }
         return false

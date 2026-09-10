@@ -172,7 +172,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if appState.isDirty && appState.currentView == .editor {
+        let hasUnsaved = (appState.isDirty || appState.currentProjectURL == nil) && appState.currentView == .editor && appState.recordedVideoURL != nil
+        if hasUnsaved {
             appState.checkUnsavedChanges {
                 NSApp.reply(toApplicationShouldTerminate: true)
             }

@@ -423,22 +423,22 @@ public final class AppState: @unchecked Sendable {
     }
     
     // Editor styling properties matching Screenshot 2
-    public var canvasRatio: String = "16:9"
-    public var customWidth: String = "16"
-    public var customHeight: String = "9"
-    public var exportResolution: String = "1080p" // "1080p", "2K", "4K", "Auto"
+    public var canvasRatio: String = "16:9" { didSet { self.isDirty = true } }
+    public var customWidth: String = "16" { didSet { self.isDirty = true } }
+    public var customHeight: String = "9" { didSet { self.isDirty = true } }
+    public var exportResolution: String = "1080p" { didSet { self.isDirty = true } } // "1080p", "2K", "4K", "Auto"
     
-    public var padding: Double = 10.0
-    public var inset: Double = 0.0
-    public var roundness: Double = 4.0
-    public var shadow: Double = 20.0
+    public var padding: Double = 10.0 { didSet { self.isDirty = true } }
+    public var inset: Double = 0.0 { didSet { self.isDirty = true } }
+    public var roundness: Double = 4.0 { didSet { self.isDirty = true } }
+    public var shadow: Double = 20.0 { didSet { self.isDirty = true } }
     
     // 3D Cinematic Zoom Engine (FocuSee / Screen Studio style)
-    public var is3DZoomEnabled: Bool = true
-    public var tiltIntensity: Double = 1.0
+    public var is3DZoomEnabled: Bool = true { didSet { self.isDirty = true } }
+    public var tiltIntensity: Double = 1.0 { didSet { self.isDirty = true } }
     
-    public var activeBackgroundIndex: Int = 0
-    public var activeColorIndex: Int? = nil
+    public var activeBackgroundIndex: Int = 0 { didSet { self.isDirty = true } }
+    public var activeColorIndex: Int? = nil { didSet { self.isDirty = true } }
     
     // Timeline & Playback
     public var currentTime: Double = 0.0
@@ -860,7 +860,7 @@ public final class AppState: @unchecked Sendable {
         self.totalDuration = max(1.0, project?.duration ?? 10.0)
         self.projectTitle = project?.title ?? url.deletingPathExtension().lastPathComponent
         self.currentProjectCreatedAt = project?.createdAt ?? Date()
-        self.isDirty = false
+        self.isDirty = (currentProjectURL == nil)
         self.startAutosaveTimer()
         
         // Load telemetry events from embedded project, external project path, or adjacent json
@@ -2044,18 +2044,23 @@ public final class AppState: @unchecked Sendable {
     
     /// Save current project edits (⌘S or Save button). If no file chosen yet, triggers Save As.
     @MainActor
-    public func saveProject(as saveAs: Bool = false) {
+    public func saveProject(as saveAs: Bool = false, onComplete: ((Bool) -> Void)? = nil) {
         if !saveAs, let existingURL = currentProjectURL {
             do {
                 try saveProjectToFile(at: existingURL)
+                onComplete?(true)
             } catch {
                 NSLog("[ClipFocus] Error saving project: %@", error.localizedDescription)
                 errorMessage = "Failed to save project: \(error.localizedDescription)"
+                onComplete?(false)
             }
             return
         }
         
-        guard !isSavePanelActive else { return }
+        guard !isSavePanelActive else {
+            onComplete?(false)
+            return
+        }
         isSavePanelActive = true
         
         let savePanel = NSSavePanel()
@@ -2072,14 +2077,22 @@ public final class AppState: @unchecked Sendable {
         let targetWindow = WindowManager.shared.currentEditorWindow ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
         
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self = self else { return }
+            guard let self = self else {
+                onComplete?(false)
+                return
+            }
             self.isSavePanelActive = false
-            guard response == .OK, let destinationURL = savePanel.url else { return }
+            guard response == .OK, let destinationURL = savePanel.url else {
+                onComplete?(false)
+                return
+            }
             do {
                 try self.saveProjectToFile(at: destinationURL)
+                onComplete?(true)
             } catch {
                 NSLog("[ClipFocus] Error saving project to file: %@", error.localizedDescription)
                 self.errorMessage = "Failed to save project: \(error.localizedDescription)"
+                onComplete?(false)
             }
         }
         
@@ -2300,7 +2313,8 @@ public final class AppState: @unchecked Sendable {
     /// Checks for unsaved changes before performing destructive actions (closing, opening new project)
     @MainActor
     public func checkUnsavedChanges(onProceed: @escaping () -> Void) {
-        guard isDirty, currentView == .editor, recordedVideoURL != nil else {
+        let hasUnsaved = (isDirty || currentProjectURL == nil) && currentView == .editor && recordedVideoURL != nil
+        guard hasUnsaved else {
             onProceed()
             return
         }
@@ -2317,15 +2331,11 @@ public final class AppState: @unchecked Sendable {
         switch response {
         case .alertFirstButtonReturn:
             // Save
-            if let existingURL = currentProjectURL {
-                do {
-                    try saveProjectToFile(at: existingURL)
+            saveProject(as: currentProjectURL == nil) { [weak self] success in
+                if success {
+                    self?.isDirty = false
                     onProceed()
-                } catch {
-                    errorMessage = "Failed to save project: \(error.localizedDescription)"
                 }
-            } else {
-                saveProject(as: true)
             }
         case .alertSecondButtonReturn:
             // Don't Save
