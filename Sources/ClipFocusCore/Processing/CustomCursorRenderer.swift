@@ -20,9 +20,9 @@ public final class CustomCursorRenderer: Sendable {
         case .arrow:
             return CGPoint(x: 1.0, y: 1.0)
         case .iBeam:
-            return CGPoint(x: size * 0.35, y: size * 0.5)
+            return CGPoint(x: size * (10.0 / 24.0), y: size * (12.0 / 24.0))
         case .pointingHand:
-            return CGPoint(x: size * 0.28, y: 1.0)
+            return CGPoint(x: size * (8.5 / 24.0), y: 1.5)
         case .openHand, .closedHand:
             return CGPoint(x: size * 0.45, y: size * 0.45)
         }
@@ -30,64 +30,69 @@ public final class CustomCursorRenderer: Sendable {
     
     // MARK: - Vector Path Generation
     
-    /// Generates iconic Screen Studio / modern dark cursor arrow with rounded contours
+    /// Generates iconic macOS / Screen Studio style clean white arrow cursor
     public static func createModernArrowPath(size: CGFloat = 24.0) -> CGPath {
         let path = CGMutablePath()
         let s = size / 24.0
         
         path.move(to: CGPoint(x: 1.0 * s, y: 1.0 * s))
-        path.addLine(to: CGPoint(x: 1.0 * s, y: 19.5 * s))
-        path.addLine(to: CGPoint(x: 5.5 * s, y: 15.5 * s))
-        path.addLine(to: CGPoint(x: 9.5 * s, y: 23.5 * s))
-        path.addLine(to: CGPoint(x: 13.0 * s, y: 21.8 * s))
-        path.addLine(to: CGPoint(x: 9.0 * s, y: 14.0 * s))
-        path.addLine(to: CGPoint(x: 15.0 * s, y: 14.0 * s))
+        path.addLine(to: CGPoint(x: 1.0 * s, y: 20.0 * s))
+        path.addLine(to: CGPoint(x: 5.8 * s, y: 15.6 * s))
+        path.addLine(to: CGPoint(x: 10.2 * s, y: 23.5 * s))
+        path.addLine(to: CGPoint(x: 13.8 * s, y: 21.5 * s))
+        path.addLine(to: CGPoint(x: 9.4 * s, y: 13.8 * s))
+        path.addLine(to: CGPoint(x: 15.6 * s, y: 13.8 * s))
         path.closeSubpath()
         
         return path
     }
     
-    /// Generates sleek I-Beam text selection cursor
+    /// Generates closed, high-contrast I-Beam text selection cursor
     public static func createIBeamPath(size: CGFloat = 24.0) -> CGPath {
         let path = CGMutablePath()
         let s = size / 24.0
-        let midX = 8.0 * s
-        let topY = 2.0 * s
-        let bottomY = 22.0 * s
-        let serifW = 5.0 * s
+        let cx = 10.0 * s
+        let top = 2.0 * s
+        let bottom = 22.0 * s
+        let serifHalf = 4.8 * s
+        let barHalf = 1.3 * s
         
-        // Top crossbar
-        path.move(to: CGPoint(x: midX - serifW, y: topY))
-        path.addLine(to: CGPoint(x: midX + serifW, y: topY))
-        // Center vertical stem
-        path.move(to: CGPoint(x: midX, y: topY))
-        path.addLine(to: CGPoint(x: midX, y: bottomY))
-        // Bottom crossbar
-        path.move(to: CGPoint(x: midX - serifW, y: bottomY))
-        path.addLine(to: CGPoint(x: midX + serifW, y: bottomY))
+        path.move(to: CGPoint(x: cx - serifHalf, y: top))
+        path.addLine(to: CGPoint(x: cx + serifHalf, y: top))
+        path.addLine(to: CGPoint(x: cx + serifHalf, y: top + 2.0 * s))
+        path.addLine(to: CGPoint(x: cx + barHalf, y: top + 2.0 * s))
+        path.addLine(to: CGPoint(x: cx + barHalf, y: bottom - 2.0 * s))
+        path.addLine(to: CGPoint(x: cx + serifHalf, y: bottom - 2.0 * s))
+        path.addLine(to: CGPoint(x: cx + serifHalf, y: bottom))
+        path.addLine(to: CGPoint(x: cx - serifHalf, y: bottom))
+        path.addLine(to: CGPoint(x: cx - serifHalf, y: bottom - 2.0 * s))
+        path.addLine(to: CGPoint(x: cx - barHalf, y: bottom - 2.0 * s))
+        path.addLine(to: CGPoint(x: cx - barHalf, y: top + 2.0 * s))
+        path.addLine(to: CGPoint(x: cx - serifHalf, y: top + 2.0 * s))
+        path.closeSubpath()
         
         return path
     }
     
-    /// Generates modern pointing hand cursor
+    /// Generates clean white pointing hand cursor
     public static func createPointingHandPath(size: CGFloat = 24.0) -> CGPath {
         let path = CGMutablePath()
         let s = size / 24.0
         
-        path.move(to: CGPoint(x: 6.5 * s, y: 1.0 * s))
-        path.addLine(to: CGPoint(x: 9.5 * s, y: 1.0 * s))
-        path.addLine(to: CGPoint(x: 9.5 * s, y: 9.0 * s))
-        path.addLine(to: CGPoint(x: 12.5 * s, y: 9.0 * s))
-        path.addLine(to: CGPoint(x: 12.5 * s, y: 11.5 * s))
-        path.addLine(to: CGPoint(x: 15.5 * s, y: 11.5 * s))
-        path.addLine(to: CGPoint(x: 15.5 * s, y: 14.0 * s))
-        path.addLine(to: CGPoint(x: 18.0 * s, y: 14.0 * s))
-        path.addLine(to: CGPoint(x: 18.0 * s, y: 20.0 * s))
-        path.addLine(to: CGPoint(x: 14.0 * s, y: 23.5 * s))
-        path.addLine(to: CGPoint(x: 6.5 * s, y: 23.5 * s))
+        path.move(to: CGPoint(x: 7.0 * s, y: 1.5 * s))
+        path.addLine(to: CGPoint(x: 10.0 * s, y: 1.5 * s))
+        path.addLine(to: CGPoint(x: 10.0 * s, y: 9.0 * s))
+        path.addLine(to: CGPoint(x: 13.0 * s, y: 9.0 * s))
+        path.addLine(to: CGPoint(x: 13.0 * s, y: 11.5 * s))
+        path.addLine(to: CGPoint(x: 16.0 * s, y: 11.5 * s))
+        path.addLine(to: CGPoint(x: 16.0 * s, y: 14.0 * s))
+        path.addLine(to: CGPoint(x: 18.5 * s, y: 14.0 * s))
+        path.addLine(to: CGPoint(x: 18.5 * s, y: 20.0 * s))
+        path.addLine(to: CGPoint(x: 14.5 * s, y: 23.5 * s))
+        path.addLine(to: CGPoint(x: 7.0 * s, y: 23.5 * s))
         path.addLine(to: CGPoint(x: 3.5 * s, y: 19.5 * s))
         path.addLine(to: CGPoint(x: 3.5 * s, y: 13.5 * s))
-        path.addLine(to: CGPoint(x: 6.5 * s, y: 9.0 * s))
+        path.addLine(to: CGPoint(x: 7.0 * s, y: 9.0 * s))
         path.closeSubpath()
         
         return path
@@ -107,51 +112,36 @@ public final class CustomCursorRenderer: Sendable {
     
     // MARK: - CoreGraphics Drawing Function
     
-    /// Draws the styled vector cursor and animated click ripple onto any CGContext (for live canvas and offline video render)
+    /// Draws the crisp vector cursor with tactile click squash onto any CGContext (for live canvas and offline video render)
     public static func drawCursor(
         in context: CGContext,
         at position: CGPoint,
         type: CursorType,
         size: CGFloat = 26.0,
-        clickProgress: Double? = nil, // 0.0...1.0 for active click ripple
+        clickProgress: Double? = nil, // 0.0...1.0 for active click animation
         isRightClick: Bool = false
     ) {
         context.saveGState()
         
-        // 1. Draw animated expanding click ripple ring if clicking
-        if let progress = clickProgress, progress >= 0.0 && progress <= 1.0 {
-            context.saveGState()
-            let ringColor = isRightClick ? CGColor(red: 1.0, green: 0.35, blue: 0.45, alpha: CGFloat(1.0 - progress) * 0.85)
-                                        : CGColor(red: 0.15, green: 0.65, blue: 1.0, alpha: CGFloat(1.0 - progress) * 0.85)
-            let radius = CGFloat(5.0 + progress * 24.0)
-            let lineWidth = max(1.0, CGFloat(3.2 * (1.0 - progress)))
-            
-            context.setStrokeColor(ringColor)
-            context.setLineWidth(lineWidth)
-            context.addArc(center: position, radius: radius, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            context.strokePath()
-            
-            // Soft inner glow dot
-            if progress < 0.5 {
-                let innerAlpha = CGFloat((0.5 - progress) * 2.0 * 0.4)
-                context.setFillColor(ringColor.copy(alpha: innerAlpha) ?? ringColor)
-                context.addArc(center: position, radius: radius * 0.5, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-                context.fillPath()
-            }
-            context.restoreGState()
-        }
+        // Ensure highest rasterization quality and smooth anti-aliasing
+        context.setAllowsAntialiasing(true)
+        context.setShouldAntialias(true)
+        context.interpolationQuality = .high
         
-        // 2. Compute press scale animation (squash slightly on click)
+        // 1. Tactile click press animation: squash slightly on click (NO ripple rings)
         var scaleFactor: CGFloat = 1.0
+        var pressOffsetY: CGFloat = 0.0
         if let progress = clickProgress, progress >= 0.0 && progress <= 0.35 {
             let normalized = progress / 0.35
-            scaleFactor = 1.0 - CGFloat(0.14 * sin(normalized * .pi))
+            let squash = CGFloat(sin(normalized * .pi))
+            scaleFactor = 1.0 - (0.16 * squash)
+            pressOffsetY = 1.5 * squash
         }
         
-        // 3. Position and scale cursor
+        // 2. Position and scale cursor
         let effectiveSize = size * scaleFactor
         let hotspot = hotspot(for: type, size: effectiveSize)
-        let drawOrigin = CGPoint(x: position.x - hotspot.x, y: position.y - hotspot.y)
+        let drawOrigin = CGPoint(x: position.x - hotspot.x, y: position.y - hotspot.y + pressOffsetY)
         
         context.translateBy(x: drawOrigin.x, y: drawOrigin.y)
         
@@ -169,37 +159,28 @@ public final class CustomCursorRenderer: Sendable {
             path = createPointingHandPath(size: effectiveSize)
         }
         
-        // 4. Soft 3D drop shadow
+        // 3. Subtle soft drop shadow for separation on any background
         context.saveGState()
         context.setShadow(
-            offset: CGSize(width: 0, height: -2.5),
-            blur: 5.0,
-            color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45)
+            offset: CGSize(width: 0, height: -1.8),
+            blur: 4.0,
+            color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.38)
         )
         
-        // 5. Crisp white outer stroke
+        // 4. Crisp Black outer border (guarantees clear contrast on bright/white backgrounds)
         context.addPath(path)
-        context.setStrokeColor(CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.95))
-        context.setLineWidth(max(1.8, effectiveSize * 0.08))
+        context.setStrokeColor(CGColor(red: 0.05, green: 0.05, blue: 0.05, alpha: 1.0))
+        let strokeWidth = max(1.5, effectiveSize * 0.075)
+        context.setLineWidth(strokeWidth)
         context.setLineJoin(.round)
         context.setLineCap(.round)
         context.strokePath()
         context.restoreGState()
         
-        // 6. Deep dark body fill
+        // 5. Pure White body fill (guarantees clear contrast on dark backgrounds)
         context.addPath(path)
-        context.setFillColor(CGColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0))
+        context.setFillColor(CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0))
         context.fillPath()
-        
-        // 7. Subtle interior accent line for arrow
-        if type == .arrow {
-            context.saveGState()
-            context.addPath(path)
-            context.setStrokeColor(CGColor(red: 0.25, green: 0.27, blue: 0.35, alpha: 0.7))
-            context.setLineWidth(1.0)
-            context.strokePath()
-            context.restoreGState()
-        }
         
         context.restoreGState()
     }

@@ -204,13 +204,11 @@ public final class AppState: @unchecked Sendable {
         
         var clickProgress: Double? = nil
         var isRight = false
-        if isClickRippleEnabled {
-            if let clickEv = telemetryEvents.last(where: {
-                $0.type == .mouseClick && time >= $0.timestamp && time <= ($0.timestamp + 0.40)
-            }) {
-                clickProgress = (time - clickEv.timestamp) / 0.40
-                isRight = (clickEv.button == .right)
-            }
+        if let clickEv = telemetryEvents.last(where: {
+            $0.type == .mouseClick && time >= $0.timestamp && time <= ($0.timestamp + 0.35)
+        }) {
+            clickProgress = (time - clickEv.timestamp) / 0.35
+            isRight = (clickEv.button == .right)
         }
         
         return (finalPos, type, clickProgress, isRight, opacity)

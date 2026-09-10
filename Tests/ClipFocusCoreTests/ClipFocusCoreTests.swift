@@ -920,10 +920,12 @@ final class ClipFocusCoreTests: XCTestCase {
         
         // 2. Verify Hotspots
         XCTAssertEqual(CustomCursorRenderer.hotspot(for: .arrow, size: 100), CGPoint(x: 1.0, y: 1.0))
-        XCTAssertEqual(CustomCursorRenderer.hotspot(for: .iBeam, size: 100), CGPoint(x: 35.0, y: 50.0))
+        let ibeamHotspot = CustomCursorRenderer.hotspot(for: .iBeam, size: 100)
+        XCTAssertEqual(ibeamHotspot.x, 100.0 * (10.0 / 24.0), accuracy: 0.001)
+        XCTAssertEqual(ibeamHotspot.y, 50.0, accuracy: 0.001)
         let pointingHotspot = CustomCursorRenderer.hotspot(for: .pointingHand, size: 100)
-        XCTAssertEqual(pointingHotspot.x, 28.0, accuracy: 0.001)
-        XCTAssertEqual(pointingHotspot.y, 1.0, accuracy: 0.001)
+        XCTAssertEqual(pointingHotspot.x, 100.0 * (8.5 / 24.0), accuracy: 0.001)
+        XCTAssertEqual(pointingHotspot.y, 1.5, accuracy: 0.001)
         XCTAssertEqual(CustomCursorRenderer.hotspot(for: .closedHand, size: 100), CGPoint(x: 45.0, y: 45.0))
         
         // 3. Verify Vector Paths Non-Empty

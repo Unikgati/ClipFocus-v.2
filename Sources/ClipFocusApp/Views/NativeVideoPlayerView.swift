@@ -13,6 +13,9 @@ final class CursorCALayerDelegate: NSObject, CALayerDelegate {
     func draw(_ layer: CALayer, in ctx: CGContext) {
         guard let state = cursorState, state.opacity > 0.01 else { return }
         ctx.saveGState()
+        ctx.setAllowsAntialiasing(true)
+        ctx.setShouldAntialias(true)
+        ctx.interpolationQuality = .high
         ctx.setAlpha(CGFloat(state.opacity))
         let pt = CGPoint(x: state.position.x * layer.bounds.width, y: state.position.y * layer.bounds.height)
         let baseSize: CGFloat = 26.0 * cursorScale * max(0.65, previewScale / max(1.0, cardScale * 0.70))
@@ -53,6 +56,13 @@ public final class CinematicPlayerNSView: NSView {
     
     override public var isFlipped: Bool {
         return true
+    }
+    
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        cursorLayer.contentsScale = backing
+        cursorLayer.setNeedsDisplay()
     }
     
     override public func hitTest(_ point: NSPoint) -> NSView? {
@@ -103,6 +113,7 @@ public final class CinematicPlayerNSView: NSView {
         cursorLayer.delegate = cursorDelegate
         cursorLayer.masksToBounds = false
         cursorLayer.backgroundColor = NSColor.clear.cgColor
+        cursorLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
         
         clipLayer.addSublayer(playerLayer)
         clipLayer.addSublayer(cursorLayer)
@@ -120,6 +131,8 @@ public final class CinematicPlayerNSView: NSView {
         
         clipLayer.frame = contentLayer.bounds
         playerLayer.frame = clipLayer.bounds
+        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        cursorLayer.contentsScale = backing
         cursorLayer.frame = clipLayer.bounds
         cursorLayer.setNeedsDisplay()
         updateCardTransform()
@@ -214,6 +227,10 @@ public final class CinematicPlayerNSView: NSView {
         cursorDelegate.cursorScale = cursorScale
         cursorDelegate.previewScale = previewScale
         cursorDelegate.cardScale = scale
+        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        if cursorLayer.contentsScale != backing {
+            cursorLayer.contentsScale = backing
+        }
         cursorLayer.frame = clipLayer.bounds
         cursorLayer.setNeedsDisplay()
         

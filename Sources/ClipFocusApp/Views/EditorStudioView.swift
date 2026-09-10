@@ -413,19 +413,6 @@ public struct EditorStudioView: View {
                         Slider(value: $appState.cursorScale, in: 1.0...2.5, step: 0.05).tint(.blue)
                     }
                     
-                    // Click Ripple Toggle
-                    Toggle(isOn: $appState.isClickRippleEnabled) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "hand.tap.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color.cyan)
-                            Text("Click Ripple Animation")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.white.opacity(0.85))
-                        }
-                    }
-                    .toggleStyle(.checkbox)
-                    
                     // Auto-Hide When Idle Toggle
                     Toggle(isOn: $appState.autoHideIdleCursor) {
                         HStack(spacing: 6) {
