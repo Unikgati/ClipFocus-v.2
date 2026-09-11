@@ -7,6 +7,7 @@ import AppKit
 /// to achieve true Screen Studio / FocuSee 3D perspective tilts and razor-sharp zoom focusing on macOS.
 public final class CinematicPlayerNSView: NSView {
     public let playerLayer = AVPlayerLayer()
+    private let perspectiveLayer = CALayer()
     private let contentLayer = CALayer()
     private let clipLayer = CALayer()
     
@@ -48,9 +49,14 @@ public final class CinematicPlayerNSView: NSView {
         layer?.masksToBounds = false
         layer?.backgroundColor = NSColor.clear.cgColor
         
+        // Perspective layer hosts sublayerTransform with center anchorPoint (0.5, 0.5)
+        // This guarantees 1:1 identical 3D camera vanishing point with VideoCompositorEngine
+        perspectiveLayer.masksToBounds = false
+        perspectiveLayer.backgroundColor = NSColor.clear.cgColor
+        
         var perspective = CATransform3DIdentity
         perspective.m34 = -1.0 / 850.0
-        layer?.sublayerTransform = perspective
+        perspectiveLayer.sublayerTransform = perspective
         
         // Content layer represents the floating video card with 3D tilt and soft drop shadow
         contentLayer.masksToBounds = false
@@ -73,13 +79,18 @@ public final class CinematicPlayerNSView: NSView {
         
         clipLayer.addSublayer(playerLayer)
         contentLayer.addSublayer(clipLayer)
-        layer?.addSublayer(contentLayer)
+        perspectiveLayer.addSublayer(contentLayer)
+        layer?.addSublayer(perspectiveLayer)
     }
     
     override public func layout() {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        perspectiveLayer.bounds = bounds
+        perspectiveLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        perspectiveLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        
         contentLayer.bounds = bounds
         contentLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         contentLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -94,7 +105,7 @@ public final class CinematicPlayerNSView: NSView {
         var perspective = CATransform3DIdentity
         let effectiveFocalDistance = 850.0 * previewScale
         perspective.m34 = -1.0 / effectiveFocalDistance
-        layer?.sublayerTransform = perspective
+        perspectiveLayer.sublayerTransform = perspective
         
         let scale = max(1.0, currentScale)
         let fx = max(0.0, min(1.0, currentFocusPoint.x))
