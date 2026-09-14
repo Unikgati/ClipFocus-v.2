@@ -1690,14 +1690,27 @@ struct VideoClipTimelineItemView: View {
     var body: some View {
         let currentSeg = appState.videoSegments.first(where: { $0.id == seg.id }) ?? seg
         let startRatio = max(0.0, min(1.0, currentSeg.timelineStartTime / totalDur))
-        let durationRatio = max(0.005, min(1.0, currentSeg.duration / totalDur))
+        let durationRatio = max(0.0, min(1.0, currentSeg.duration / totalDur))
         let xPos = CGFloat(startRatio) * trackWidth
-        let blockW = max(20, CGFloat(durationRatio) * trackWidth)
+        let truePixelW = CGFloat(durationRatio) * trackWidth
+        
+        // Anti-Overlap Guard: Visual width must NEVER exceed the start of the next adjacent clip
+        let sortedSegs = appState.videoSegments.sorted(by: { $0.timelineStartTime < $1.timelineStartTime })
+        let nextSeg = sortedSegs.first(where: { $0.timelineStartTime > currentSeg.timelineStartTime + 0.001 })
+        let maxAllowedW = nextSeg.map { s in
+            let nextStartRatio = max(0.0, min(1.0, s.timelineStartTime / totalDur))
+            let nextX = CGFloat(nextStartRatio) * trackWidth
+            return max(1.0, nextX - xPos)
+        } ?? max(1.0, trackWidth - xPos)
+        
+        let idealW = max(2.0, truePixelW)
+        let blockW = max(1.0, min(idealW, maxAllowedW))
         let isSelected = appState.selectedSegmentIDs.contains(currentSeg.id) && appState.selectedTrackType == .video
+        let cornerR = min(6.0, max(1.0, blockW * 0.25))
         
         ZStack(alignment: .leading) {
             // Clip background
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: cornerR)
                 .fill(
                     LinearGradient(
                         colors: isSelected
@@ -1708,8 +1721,8 @@ struct VideoClipTimelineItemView: View {
                     )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? Color.white : Color.purple.opacity(0.4), lineWidth: isSelected ? 1.5 : 0.8)
+                    RoundedRectangle(cornerRadius: cornerR)
+                        .stroke(isSelected ? Color.white : Color.purple.opacity(blockW < 8 ? 0.25 : 0.4), lineWidth: isSelected ? 1.5 : (blockW < 8 ? 0.5 : 0.8))
                 )
             
             // 3-Zone Interactive Layout
@@ -1760,10 +1773,12 @@ struct VideoClipTimelineItemView: View {
                 }
                 
                 // Center Move Body
-                HStack(spacing: 5) {
-                    Image(systemName: "film.fill")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.white.opacity(0.85))
+                HStack(spacing: 4) {
+                    if blockW >= 22 {
+                        Image(systemName: "film")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
                     
                     if blockW >= 60 {
                         Text(currentSeg.name)
@@ -1772,7 +1787,7 @@ struct VideoClipTimelineItemView: View {
                             .lineLimit(1)
                     }
                     
-                    Spacer()
+                    Spacer(minLength: 0)
                     
                     if blockW >= 40 {
                         Text(formatSecShort(currentSeg.duration))
@@ -1894,15 +1909,28 @@ struct AudioClipTimelineItemView: View {
     var body: some View {
         let currentSeg = appState.audioSegments.first(where: { $0.id == seg.id }) ?? seg
         let startRatio = max(0.0, min(1.0, currentSeg.timelineStartTime / totalDur))
-        let durationRatio = max(0.005, min(1.0, currentSeg.duration / totalDur))
+        let durationRatio = max(0.0, min(1.0, currentSeg.duration / totalDur))
         let xPos = CGFloat(startRatio) * trackWidth
-        let blockW = max(20, CGFloat(durationRatio) * trackWidth)
+        let truePixelW = CGFloat(durationRatio) * trackWidth
+        
+        // Anti-Overlap Guard: Visual width must NEVER exceed start of next audio segment
+        let sortedSegs = appState.audioSegments.sorted(by: { $0.timelineStartTime < $1.timelineStartTime })
+        let nextSeg = sortedSegs.first(where: { $0.timelineStartTime > currentSeg.timelineStartTime + 0.001 })
+        let maxAllowedW = nextSeg.map { s in
+            let nextStartRatio = max(0.0, min(1.0, s.timelineStartTime / totalDur))
+            let nextX = CGFloat(nextStartRatio) * trackWidth
+            return max(1.0, nextX - xPos)
+        } ?? max(1.0, trackWidth - xPos)
+        
+        let idealW = max(2.0, truePixelW)
+        let blockW = max(1.0, min(idealW, maxAllowedW))
         let isSelected = appState.selectedSegmentIDs.contains(currentSeg.id) && appState.selectedTrackType == .audio
         let isMuted = currentSeg.isMuted || appState.isAudioMuted
+        let cornerR = min(6.0, max(1.0, blockW * 0.25))
         
         ZStack(alignment: .leading) {
             // Clip background
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: cornerR)
                 .fill(
                     LinearGradient(
                         colors: isSelected
@@ -1913,8 +1941,8 @@ struct AudioClipTimelineItemView: View {
                     )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? Color.white : Color(red: 0.20, green: 0.85, blue: 0.65).opacity(0.35), lineWidth: isSelected ? 1.5 : 0.8)
+                    RoundedRectangle(cornerRadius: cornerR)
+                        .stroke(isSelected ? Color.white : Color(red: 0.20, green: 0.85, blue: 0.65).opacity(blockW < 8 ? 0.20 : 0.35), lineWidth: isSelected ? 1.5 : (blockW < 8 ? 0.5 : 0.8))
                 )
             
             // Professional NLE Audio Waveform Visualizer (Hardware-Accelerated Cached Canvas)
@@ -2181,14 +2209,27 @@ struct KeyframeTimelineItemView: View {
     var body: some View {
         let currentKf = appState.zoomKeyframes.first(where: { $0.id == kf.id }) ?? kf
         let startRatio = max(0.0, min(1.0, currentKf.startTime / totalDur))
-        let durationRatio = max(0.005, min(1.0, currentKf.duration / totalDur))
+        let durationRatio = max(0.0, min(1.0, currentKf.duration / totalDur))
         let xPos = CGFloat(startRatio) * trackWidth
-        let blockW = max(18, CGFloat(durationRatio) * trackWidth)
+        let truePixelW = CGFloat(durationRatio) * trackWidth
+        
+        // Anti-Overlap Guard: Prevent keyframes from overflowing and visually covering adjacent keyframes
+        let sortedKfs = appState.zoomKeyframes.sorted(by: { $0.startTime < $1.startTime })
+        let nextKf = sortedKfs.first(where: { $0.startTime > currentKf.startTime + 0.001 })
+        let maxAllowedW = nextKf.map { nxt in
+            let nextStartRatio = max(0.0, min(1.0, nxt.startTime / totalDur))
+            let nextX = CGFloat(nextStartRatio) * trackWidth
+            return max(1.0, nextX - xPos)
+        } ?? max(1.0, trackWidth - xPos)
+        
+        let idealW = max(3.0, truePixelW)
+        let blockW = max(1.0, min(idealW, maxAllowedW))
         let isSelected = appState.selectedKeyframeIDs.contains(currentKf.id)
+        let cornerR = min(5.0, max(1.0, blockW * 0.25))
         
         ZStack(alignment: .leading) {
             // Clean Modern Block Container (Zero intrusive white pills)
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: cornerR)
                 .fill(
                     LinearGradient(
                         colors: isSelected
@@ -2199,8 +2240,8 @@ struct KeyframeTimelineItemView: View {
                     )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(isSelected ? Color.white : Color.white.opacity(0.35), lineWidth: isSelected ? 1.5 : 0.8)
+                    RoundedRectangle(cornerRadius: cornerR)
+                        .stroke(isSelected ? Color.white : Color.white.opacity(blockW < 8 ? 0.20 : 0.35), lineWidth: isSelected ? 1.5 : (blockW < 8 ? 0.5 : 0.8))
                 )
             
             // Interactive 3-Zone Layout (Left Trim | Move Body | Right Trim) without visual clutter
@@ -2256,8 +2297,10 @@ struct KeyframeTimelineItemView: View {
                 
                 // Center Move Body (Changes cursor to openHand, moves clip position)
                 HStack(spacing: 3) {
-                    Image(systemName: currentKf.effectType == .motion3D ? "cube.fill" : "viewfinder")
-                        .font(.system(size: 9))
+                    if blockW >= 16 {
+                        Image(systemName: currentKf.effectType == .motion3D ? "cube.fill" : "viewfinder")
+                            .font(.system(size: 9))
+                    }
                     if blockW >= 46 {
                         Text(currentKf.effectType == .motion3D ? "3D \(String(format: "%.1f", currentKf.scale))x" : "\(String(format: "%.1f", currentKf.scale))x")
                             .font(.system(size: 9.5, weight: .bold))
