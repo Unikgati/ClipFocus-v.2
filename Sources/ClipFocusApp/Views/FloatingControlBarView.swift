@@ -102,6 +102,87 @@ public struct FloatingControlBarView: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
 
+            // 2b. Window Target Selector (When recording in Window Mode)
+            if appState.selectedMode == .window {
+                Menu {
+                    if appState.availableWindows.isEmpty {
+                        Text("No windows detected. Hover or click an open window.")
+                    } else {
+                        ForEach(appState.availableWindows) { win in
+                            Button(action: {
+                                appState.selectedWindowID = win.windowID
+                                appState.selectedWindowFrame = win.frame
+                                appState.selectedWindowName = win.appName + " - " + win.title
+                                WindowManager.shared.updateWindows()
+                            }) {
+                                if appState.selectedWindowID == win.windowID {
+                                    Label("\(win.appName): \(win.title.isEmpty ? "Main Window" : win.title)", systemImage: "checkmark")
+                                } else {
+                                    Text("\(win.appName): \(win.title.isEmpty ? "Main Window" : win.title)")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "macwindow")
+                            .font(.system(size: 12))
+                        Text(appState.selectedWindowName ?? "Select Window")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 125)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                    }
+                    .foregroundStyle(Color.cyan)
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(Color.cyan.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.cyan.opacity(0.3), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+            }
+            
+            // 2c. Display Target Selector (When in Full Screen mode with multiple displays)
+            if appState.selectedMode == .fullScreen && appState.availableDisplays.count > 1 {
+                Menu {
+                    ForEach(appState.availableDisplays) { disp in
+                        Button(action: {
+                            appState.selectedDisplayID = disp.id
+                        }) {
+                            if appState.selectedDisplayID == disp.id {
+                                Label(disp.name, systemImage: "checkmark")
+                            } else {
+                                Text(disp.name)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "display")
+                            .font(.system(size: 12))
+                        Text(appState.selectedDisplayName)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 125)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                    }
+                    .foregroundStyle(Color.blue)
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(Color.blue.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.blue.opacity(0.3), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+            }
+
             // 3. Microphone Menu / Permission
             if !appState.hasMicPermission {
                 Button(action: {

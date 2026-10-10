@@ -43,6 +43,25 @@ public final class CinematicPlayerNSView: NSView {
         setupLayers()
     }
     
+    private func updateBackingScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        layer?.contentsScale = scale
+        perspectiveLayer.contentsScale = scale
+        contentLayer.contentsScale = scale
+        clipLayer.contentsScale = scale
+        playerLayer.contentsScale = scale
+    }
+    
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateBackingScale()
+    }
+    
+    override public func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateBackingScale()
+    }
+    
     private func setupLayers() {
         wantsLayer = true
         layer = CALayer()
@@ -72,19 +91,24 @@ public final class CinematicPlayerNSView: NSView {
         clipLayer.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
         clipLayer.borderWidth = 1.2
         
-        // Video layer: fills the card exactly
+        // Video layer: fills the card exactly with razor-sharp Retina sampling
         playerLayer.videoGravity = .resizeAspectFill
         playerLayer.masksToBounds = true
         playerLayer.backgroundColor = NSColor.clear.cgColor
+        playerLayer.minificationFilter = .trilinear
+        playerLayer.magnificationFilter = .linear
         
         clipLayer.addSublayer(playerLayer)
         contentLayer.addSublayer(clipLayer)
         perspectiveLayer.addSublayer(contentLayer)
         layer?.addSublayer(perspectiveLayer)
+        
+        updateBackingScale()
     }
     
     override public func layout() {
         super.layout()
+        updateBackingScale()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         perspectiveLayer.bounds = bounds

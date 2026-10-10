@@ -1808,6 +1808,54 @@ final class ClipFocusCoreTests: XCTestCase {
             XCTAssertGreaterThan(v, 0.05, "Camera velocity must remain positive and continuous during framing transition")
         }
     }
+    
+    func testZoomOutWhileCursorExitsCameraArea() {
+        let engine = AutoZoomEngine()
+        let kf = ZoomKeyframe(startTime: 1.0, duration: 4.0, focusPoint: CGPoint(x: 0.50, y: 0.50), scale: 2.0)
+        
+        // Cursor starts centered, then at t=3.5 (during zoom out which begins at 5.0 - 0.95 = 4.05s)
+        // moves rapidly towards the bottom-right corner (0.95, 0.95) to simulate user moving to stop recording or exit
+        var events: [TelemetryEvent] = []
+        for i in 0...100 {
+            let t = Double(i) * 0.05
+            if t < 3.8 {
+                events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)))
+            } else {
+                let progress = min(1.0, (t - 3.8) / 1.0)
+                let pos = CGPoint(x: 0.50 + 0.45 * progress, y: 0.50 + 0.45 * progress)
+                events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: pos))
+            }
+        }
+        
+        var prevScale: CGFloat = 2.0
+        var prevFocus: CGPoint?
+        
+        // Frame-by-frame 60Hz evaluation across the zoom-out window (3.8s to 5.2s)
+        for step in 0...84 {
+            let t = 3.8 + Double(step) * 0.01667
+            let vp = engine.evaluateViewport(at: t, with: [kf], telemetry: events)
+            
+            // 1. Scale must decrease monotonically during zoom-out
+            if t >= 4.05 && t <= 5.0 {
+                XCTAssertLessThanOrEqual(vp.scale, prevScale + 0.001, "Scale must not increase during zoom-out at t=\(t)")
+            }
+            
+            // 2. Focus continuity: no sudden frame-to-frame jump or glitch (> 0.05 in a 16.6ms frame)
+            if let p = prevFocus {
+                let dFocus = hypot(vp.focusPoint.x - p.x, vp.focusPoint.y - p.y)
+                XCTAssertLessThan(dFocus, 0.05, "Camera jerk at t=\(t): \(dFocus)")
+            }
+            
+            prevScale = vp.scale
+            prevFocus = vp.focusPoint
+        }
+        
+        // 3. At completion of zoom out, viewport must be smoothly centered at full screen
+        let vpFinal = engine.evaluateViewport(at: 5.1, with: [kf], telemetry: events)
+        XCTAssertEqual(vpFinal.scale, 1.0, accuracy: 0.001)
+        XCTAssertEqual(vpFinal.focusPoint.x, 0.5, accuracy: 0.001)
+        XCTAssertEqual(vpFinal.focusPoint.y, 0.5, accuracy: 0.001)
+    }
 }
 
 

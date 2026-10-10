@@ -285,7 +285,23 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         setupEscapeKeyMonitoring()
         
         observeAppState()
+        setupScreenChangeMonitoring()
         updateWindows()
+    }
+    
+    private func setupScreenChangeMonitoring() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, let appState = self.appState else { return }
+                appState.refreshAvailableDisplays()
+                self.repositionAreaOverlay()
+                self.repositionFloatingBar()
+            }
+        }
     }
     
     public func setupEscapeKeyMonitoring() {
@@ -336,10 +352,13 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             _ = appState.selectedCamera
             _ = appState.selectedMic
             _ = appState.selectedAudio
+            _ = appState.selectedDisplayID
+            _ = appState.selectedWindowID
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 self?.updateWindows()
                 self?.repositionFloatingBar()
+                self?.repositionAreaOverlay()
                 self?.observeAppState()
             }
         }
@@ -546,11 +565,26 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         self.permissionsWindow = window
     }
     
+    public static func screen(for displayID: CGDirectDisplayID) -> NSScreen? {
+        return NSScreen.screens.first(where: { screen in
+            let rawNum = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            let id = rawNum ?? (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID)
+            return id == displayID
+        })
+    }
+    
     public func repositionFloatingBar() {
         guard let panel = floatingBarPanel, let hostingView = panel.contentView else { return }
         hostingView.layoutSubtreeIfNeeded()
         let fitting = hostingView.fittingSize
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
+        
+        let targetScreen: NSScreen?
+        if let targetDisplayID = appState?.selectedDisplayID {
+            targetScreen = WindowManager.screen(for: targetDisplayID)
+        } else {
+            targetScreen = nil
+        }
+        let screen = targetScreen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
         let barWidth: CGFloat = max(340, ceil(fitting.width))
         let barHeight: CGFloat = 46
         let rect = NSRect(
@@ -564,7 +598,13 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     
     private func repositionRecordingPill() {
         guard let panel = recordingPillPanel else { return }
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
+        let targetScreen: NSScreen?
+        if let targetDisplayID = appState?.selectedDisplayID {
+            targetScreen = WindowManager.screen(for: targetDisplayID)
+        } else {
+            targetScreen = nil
+        }
+        let screen = targetScreen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
         let pillWidth: CGFloat = (appState?.isFinalizingRecording == true) ? 310 : 290
         let pillHeight: CGFloat = 46
         let rect = NSRect(
@@ -603,10 +643,51 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         self.areaOverlayPanel = panel
     }
     
-    private func repositionAreaOverlay() {
+    public func repositionAreaOverlay() {
         guard let panel = areaOverlayPanel else { return }
-        let screen = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        panel.setFrame(screen, display: true)
+        let primaryH = NSScreen.screens.first?.frame.height ?? 1080
+        
+        // 1. If in FullScreen mode, place border indicator directly on the selected target display (e.g. external monitor)
+        if appState?.selectedMode == .fullScreen, let targetDisplayID = appState?.selectedDisplayID {
+            if let matchedScreen = WindowManager.screen(for: targetDisplayID) {
+                if panel.frame != matchedScreen.frame {
+                    panel.setFrame(matchedScreen.frame, display: true)
+                }
+                return
+            }
+        }
+        
+        // 2. If in Window mode and we have a selected window, align panel with the screen containing that window
+        if appState?.selectedMode == .window, let targetFrame = appState?.selectedWindowFrame ?? appState?.hoveredWindowFrame {
+            if let matchedScreen = NSScreen.screens.first(where: { screen in
+                let qX = screen.frame.origin.x
+                let qY = primaryH - (screen.frame.origin.y + screen.frame.height)
+                let screenQRect = CGRect(x: qX, y: qY, width: screen.frame.width, height: screen.frame.height)
+                return screenQRect.intersects(targetFrame)
+            }) {
+                if panel.frame != matchedScreen.frame {
+                    panel.setFrame(matchedScreen.frame, display: true)
+                }
+                return
+            }
+        }
+        
+        // 3. If in Custom mode and target display is chosen
+        if appState?.selectedMode == .custom, let targetDisplayID = appState?.selectedDisplayID {
+            if let matchedScreen = WindowManager.screen(for: targetDisplayID) {
+                if panel.frame != matchedScreen.frame {
+                    panel.setFrame(matchedScreen.frame, display: true)
+                }
+                return
+            }
+        }
+        
+        // Fallback: Screen containing mouse location or main screen
+        let mouseLoc = NSEvent.mouseLocation
+        let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) }) ?? NSScreen.main ?? NSScreen.screens.first
+        if let screen = targetScreen, panel.frame != screen.frame {
+            panel.setFrame(screen.frame, display: true)
+        }
     }
     
     public func allClipFocusWindowIDs() -> [CGWindowID] {
@@ -663,8 +744,9 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         guard let appState = self.appState, appState.selectedMode == .window, !appState.isCountingDown else { return }
         
         let mouseLoc = NSEvent.mouseLocation
-        let screenH = NSScreen.main?.frame.height ?? 900
-        let pt = CGPoint(x: mouseLoc.x, y: screenH - mouseLoc.y)
+        let primaryScreen = NSScreen.screens.first
+        let primaryH = primaryScreen?.frame.height ?? 1080
+        let pt = CGPoint(x: mouseLoc.x, y: primaryH - mouseLoc.y)
         
         // If mouse is inside the floating control bar, preserve active selection and do not re-hover
         if let floatingFrame = floatingBarPanel?.frame, floatingFrame.contains(mouseLoc) {
@@ -677,6 +759,10 @@ public final class WindowManager: NSObject, NSWindowDelegate {
                     appState.hoveredWindowID = match.windowID
                     appState.hoveredWindowFrame = match.frame
                     appState.hoveredWindowName = match.owningApplication?.applicationName ?? match.title
+                    appState.selectedWindowID = match.windowID
+                    appState.selectedWindowFrame = match.frame
+                    appState.selectedWindowName = match.owningApplication?.applicationName ?? match.title
+                    repositionAreaOverlay()
                 }
             } else {
                 appState.hoveredWindowID = nil
@@ -687,6 +773,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
                 appState.selectedWindowID = match.windowID
                 appState.selectedWindowFrame = match.frame
                 appState.selectedWindowName = match.owningApplication?.applicationName ?? match.title
+                repositionAreaOverlay()
             }
         }
     }
@@ -706,6 +793,15 @@ public final class WindowManager: NSObject, NSWindowDelegate {
                 }
                 await MainActor.run {
                     self.cachedUserWindows = filtered
+                    let winInfos = filtered.map { w in
+                        RecordedWindowInfo(
+                            windowID: w.windowID,
+                            appName: w.owningApplication?.applicationName ?? "App",
+                            title: w.title ?? "",
+                            frame: w.frame
+                        )
+                    }
+                    self.appState?.availableWindows = winInfos
                     if self.appState?.selectedWindowID == nil, let top = filtered.first {
                         self.appState?.selectedWindowID = top.windowID
                         self.appState?.selectedWindowFrame = top.frame

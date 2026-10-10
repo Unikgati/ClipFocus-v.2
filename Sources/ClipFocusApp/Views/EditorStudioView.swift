@@ -1435,6 +1435,9 @@ public struct EditorStudioView: View {
                                 hoverTimelineSec = nil
                                 isHoveringTimeline = false
                                 appState.endHoverPreview()
+                                if NSCursor.current != .arrow {
+                                    NSCursor.arrow.set()
+                                }
                             }
                         }
                     }
@@ -1636,7 +1639,7 @@ final class CustomCursorNSView: NSView {
     private var trackingArea: NSTrackingArea?
     
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Crucial: Return nil so AppKit mouse tracking never intercepts SwiftUI gestures
+        // Return nil so AppKit mouse tracking never intercepts SwiftUI gestures
         return nil
     }
     
@@ -1647,7 +1650,7 @@ final class CustomCursorNSView: NSView {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate],
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -1655,25 +1658,21 @@ final class CustomCursorNSView: NSView {
         self.trackingArea = area
     }
     
-    override func cursorUpdate(with event: NSEvent) {
+    override func mouseEntered(with event: NSEvent) {
         cursor.set()
     }
     
-    override func mouseEntered(with event: NSEvent) {
-        cursor.push()
-    }
-    
     override func mouseExited(with event: NSEvent) {
-        NSCursor.pop()
-    }
-    
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: cursor)
+        NSCursor.arrow.set()
     }
 }
 
-/// Interactive Segmented Video Clip View with drag-drop and left/right trim handles
+enum TimelineTrimEdge: Sendable {
+    case start
+    case end
+}
+
+/// Interactive Segmented Video Clip View with drag-drop and left/right trim handles (Premiere Pro style)
 struct VideoClipTimelineItemView: View {
     @Bindable var appState: AppState
     let seg: MediaClipSegment
@@ -1683,9 +1682,8 @@ struct VideoClipTimelineItemView: View {
     
     @State private var dragStart_StartSec: Double? = nil
     @State private var dragStart_DurSec: Double? = nil
-    @State private var isHoveringLeftHandle = false
-    @State private var isHoveringRightHandle = false
-    @State private var isHoveringBody = false
+    @State private var hoveredEdge: TimelineTrimEdge? = nil
+    @State private var activeDragEdge: TimelineTrimEdge? = nil
     
     var body: some View {
         let currentSeg = appState.videoSegments.first(where: { $0.id == seg.id }) ?? seg
@@ -1707,9 +1705,11 @@ struct VideoClipTimelineItemView: View {
         let blockW = max(1.0, min(idealW, maxAllowedW))
         let isSelected = appState.selectedSegmentIDs.contains(currentSeg.id) && appState.selectedTrackType == .video
         let cornerR = min(6.0, max(1.0, blockW * 0.25))
+        let canTrim = blockW >= 16
+        let handleW: CGFloat = min(8.0, blockW * 0.22)
         
         ZStack(alignment: .leading) {
-            // Clip background
+            // Uniform Clip Background (Clean Premiere Pro style, zero dividing elements)
             RoundedRectangle(cornerRadius: cornerR)
                 .fill(
                     LinearGradient(
@@ -1725,22 +1725,44 @@ struct VideoClipTimelineItemView: View {
                         .stroke(isSelected ? Color.white : Color.purple.opacity(blockW < 8 ? 0.25 : 0.4), lineWidth: isSelected ? 1.5 : (blockW < 8 ? 0.5 : 0.8))
                 )
             
-            // 3-Zone Interactive Layout
+            // Active/Hovered Trim Edge Indicator (Premiere Pro Style)
+            let showingStartTrim = (hoveredEdge == .start && !appState.isScrubbing) || activeDragEdge == .start
+            let showingEndTrim = (hoveredEdge == .end && !appState.isScrubbing) || activeDragEdge == .end
+            
+            if showingStartTrim {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2.5)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.white.opacity(0.85), radius: 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerR))
+                    .allowsHitTesting(false)
+            }
+            
+            if showingEndTrim {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2.5)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.white.opacity(0.85), radius: 2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerR))
+                    .allowsHitTesting(false)
+            }
+            
+            // 3-Zone Invisible Interaction Layer
             HStack(spacing: 0) {
-                // Left Trim Handle
-                if blockW >= 24 {
-                    Rectangle()
-                        .fill(Color.white.opacity(isHoveringLeftHandle ? 0.25 : 0.001))
-                        .frame(width: 8, height: 32)
-                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                // Left Trim Invisible Hotspot
+                if canTrim {
+                    Color.white.opacity(0.0001)
+                        .frame(width: handleW, height: 32)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringLeftHandle = hovering
-                            if hovering { NSCursor.resizeLeftRight.set() }
-                        }
                         .highPriorityGesture(
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
+                                    activeDragEdge = .start
+                                    NSCursor.resizeLeftRight.set()
                                     appState.isScrubbing = true
                                     activeSidebarTab = "canvas"
                                     if !appState.selectedSegmentIDs.contains(currentSeg.id) {
@@ -1762,6 +1784,7 @@ struct VideoClipTimelineItemView: View {
                                     }
                                 }
                                 .onEnded { _ in
+                                    activeDragEdge = nil
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
@@ -1797,12 +1820,7 @@ struct VideoClipTimelineItemView: View {
                 }
                 .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(CustomCursorView(cursor: .openHand))
                 .contentShape(Rectangle())
-                .onHover { hovering in
-                    isHoveringBody = hovering
-                    if hovering { NSCursor.openHand.set() }
-                }
                 .onTapGesture {
                     let isShift = NSEvent.modifierFlags.contains(.shift)
                     let isCmd = NSEvent.modifierFlags.contains(.command)
@@ -1812,6 +1830,9 @@ struct VideoClipTimelineItemView: View {
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                         .onChanged { value in
+                            activeDragEdge = nil
+                            hoveredEdge = nil
+                            NSCursor.closedHand.set()
                             appState.isScrubbing = true
                             activeSidebarTab = "canvas"
                             appState.selectSegment(id: currentSeg.id, trackType: .video)
@@ -1843,20 +1864,16 @@ struct VideoClipTimelineItemView: View {
                         }
                 )
                 
-                // Right Trim Handle
-                if blockW >= 24 {
-                    Rectangle()
-                        .fill(Color.white.opacity(isHoveringRightHandle ? 0.25 : 0.001))
-                        .frame(width: 8, height: 32)
-                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                // Right Trim Invisible Hotspot
+                if canTrim {
+                    Color.white.opacity(0.0001)
+                        .frame(width: handleW, height: 32)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringRightHandle = hovering
-                            if hovering { NSCursor.resizeLeftRight.set() }
-                        }
                         .highPriorityGesture(
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
+                                    activeDragEdge = .end
+                                    NSCursor.resizeLeftRight.set()
                                     appState.isScrubbing = true
                                     appState.selectSegment(id: currentSeg.id, trackType: .video)
                                     if dragStart_DurSec == nil {
@@ -1876,6 +1893,7 @@ struct VideoClipTimelineItemView: View {
                                     }
                                 }
                                 .onEnded { _ in
+                                    activeDragEdge = nil
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
                                     appState.endDragOperation()
@@ -1888,6 +1906,25 @@ struct VideoClipTimelineItemView: View {
         }
         .frame(width: blockW, height: 32)
         .shadow(color: isSelected ? Color.purple.opacity(0.5) : Color.clear, radius: 4, y: 1)
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            guard !appState.isScrubbing else { return }
+            switch phase {
+            case .active(let pt):
+                if canTrim && pt.x <= handleW {
+                    hoveredEdge = .start
+                    NSCursor.resizeLeftRight.set()
+                } else if canTrim && pt.x >= blockW - handleW {
+                    hoveredEdge = .end
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    hoveredEdge = nil
+                    NSCursor.openHand.set()
+                }
+            case .ended:
+                hoveredEdge = nil
+                NSCursor.arrow.set()
+            }
+        }
         .offset(x: xPos)
     }
 }
@@ -1901,9 +1938,8 @@ struct AudioClipTimelineItemView: View {
     
     @State private var dragStart_StartSec: Double? = nil
     @State private var dragStart_DurSec: Double? = nil
-    @State private var isHoveringLeftHandle = false
-    @State private var isHoveringRightHandle = false
-    @State private var isHoveringBody = false
+    @State private var hoveredEdge: TimelineTrimEdge? = nil
+    @State private var activeDragEdge: TimelineTrimEdge? = nil
     @State private var cachedBars: [Float] = []
     
     var body: some View {
@@ -1927,6 +1963,8 @@ struct AudioClipTimelineItemView: View {
         let isSelected = appState.selectedSegmentIDs.contains(currentSeg.id) && appState.selectedTrackType == .audio
         let isMuted = currentSeg.isMuted || appState.isAudioMuted
         let cornerR = min(6.0, max(1.0, blockW * 0.25))
+        let canTrim = blockW >= 16
+        let handleW: CGFloat = min(8.0, blockW * 0.22)
         
         ZStack(alignment: .leading) {
             // Clip background
@@ -1944,6 +1982,32 @@ struct AudioClipTimelineItemView: View {
                     RoundedRectangle(cornerRadius: cornerR)
                         .stroke(isSelected ? Color.white : Color(red: 0.20, green: 0.85, blue: 0.65).opacity(blockW < 8 ? 0.20 : 0.35), lineWidth: isSelected ? 1.5 : (blockW < 8 ? 0.5 : 0.8))
                 )
+            
+            // Active/Hovered Trim Edge Indicator (Premiere Pro Style)
+            let showingStartTrim = (hoveredEdge == .start && !appState.isScrubbing) || activeDragEdge == .start
+            let showingEndTrim = (hoveredEdge == .end && !appState.isScrubbing) || activeDragEdge == .end
+            
+            if showingStartTrim {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2.5)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.white.opacity(0.85), radius: 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerR))
+                    .allowsHitTesting(false)
+            }
+            
+            if showingEndTrim {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2.5)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.white.opacity(0.85), radius: 2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerR))
+                    .allowsHitTesting(false)
+            }
             
             // Professional NLE Audio Waveform Visualizer (Hardware-Accelerated Cached Canvas)
             GeometryReader { geo in
@@ -1998,20 +2062,16 @@ struct AudioClipTimelineItemView: View {
             
             // 3-Zone Interactive Layout
             HStack(spacing: 0) {
-                // Left Trim Handle
-                if blockW >= 24 {
-                    Rectangle()
-                        .fill(Color.white.opacity(isHoveringLeftHandle ? 0.25 : 0.001))
-                        .frame(width: 8, height: 28)
-                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                // Left Trim Invisible Hotspot
+                if canTrim {
+                    Color.white.opacity(0.0001)
+                        .frame(width: handleW, height: 28)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringLeftHandle = hovering
-                            if hovering { NSCursor.resizeLeftRight.set() }
-                        }
                         .highPriorityGesture(
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
+                                    activeDragEdge = .start
+                                    NSCursor.resizeLeftRight.set()
                                     appState.isScrubbing = true
                                     if !appState.selectedSegmentIDs.contains(currentSeg.id) {
                                         appState.selectSegment(id: currentSeg.id, trackType: .audio)
@@ -2032,6 +2092,7 @@ struct AudioClipTimelineItemView: View {
                                     }
                                 }
                                 .onEnded { _ in
+                                    activeDragEdge = nil
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
@@ -2058,12 +2119,7 @@ struct AudioClipTimelineItemView: View {
                 }
                 .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(CustomCursorView(cursor: .openHand))
                 .contentShape(Rectangle())
-                .onHover { hovering in
-                    isHoveringBody = hovering
-                    if hovering { NSCursor.openHand.set() }
-                }
                 .onTapGesture {
                     let isShift = NSEvent.modifierFlags.contains(.shift)
                     let isCmd = NSEvent.modifierFlags.contains(.command)
@@ -2072,6 +2128,9 @@ struct AudioClipTimelineItemView: View {
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                         .onChanged { value in
+                            activeDragEdge = nil
+                            hoveredEdge = nil
+                            NSCursor.closedHand.set()
                             appState.isScrubbing = true
                             if !appState.selectedSegmentIDs.contains(currentSeg.id) {
                                 appState.selectSegment(id: currentSeg.id, trackType: .audio)
@@ -2104,20 +2163,16 @@ struct AudioClipTimelineItemView: View {
                         }
                 )
                 
-                // Right Trim Handle
-                if blockW >= 24 {
-                    Rectangle()
-                        .fill(Color.white.opacity(isHoveringRightHandle ? 0.25 : 0.001))
-                        .frame(width: 8, height: 28)
-                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                // Right Trim Invisible Hotspot
+                if canTrim {
+                    Color.white.opacity(0.0001)
+                        .frame(width: handleW, height: 28)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringRightHandle = hovering
-                            if hovering { NSCursor.resizeLeftRight.set() }
-                        }
                         .highPriorityGesture(
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
+                                    activeDragEdge = .end
+                                    NSCursor.resizeLeftRight.set()
                                     appState.isScrubbing = true
                                     appState.selectSegment(id: currentSeg.id, trackType: .audio)
                                     if dragStart_DurSec == nil {
@@ -2137,6 +2192,7 @@ struct AudioClipTimelineItemView: View {
                                     }
                                 }
                                 .onEnded { _ in
+                                    activeDragEdge = nil
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
                                     appState.endDragOperation()
@@ -2149,6 +2205,25 @@ struct AudioClipTimelineItemView: View {
         }
         .frame(width: blockW, height: 28)
         .shadow(color: isSelected ? Color.green.opacity(0.4) : Color.clear, radius: 4, y: 1)
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            guard !appState.isScrubbing else { return }
+            switch phase {
+            case .active(let pt):
+                if canTrim && pt.x <= handleW {
+                    hoveredEdge = .start
+                    NSCursor.resizeLeftRight.set()
+                } else if canTrim && pt.x >= blockW - handleW {
+                    hoveredEdge = .end
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    hoveredEdge = nil
+                    NSCursor.openHand.set()
+                }
+            case .ended:
+                hoveredEdge = nil
+                NSCursor.arrow.set()
+            }
+        }
         .offset(x: xPos)
     }
     
@@ -2202,9 +2277,8 @@ struct KeyframeTimelineItemView: View {
     
     @State private var dragStart_StartSec: Double? = nil
     @State private var dragStart_DurSec: Double? = nil
-    @State private var isHoveringLeftHandle = false
-    @State private var isHoveringRightHandle = false
-    @State private var isHoveringBody = false
+    @State private var hoveredEdge: TimelineTrimEdge? = nil
+    @State private var activeDragEdge: TimelineTrimEdge? = nil
     
     var body: some View {
         let currentKf = appState.zoomKeyframes.first(where: { $0.id == kf.id }) ?? kf
@@ -2226,9 +2300,11 @@ struct KeyframeTimelineItemView: View {
         let blockW = max(1.0, min(idealW, maxAllowedW))
         let isSelected = appState.selectedKeyframeIDs.contains(currentKf.id)
         let cornerR = min(5.0, max(1.0, blockW * 0.25))
+        let canTrim = blockW >= 16
+        let handleW: CGFloat = min(8.0, blockW * 0.22)
         
         ZStack(alignment: .leading) {
-            // Clean Modern Block Container (Zero intrusive white pills)
+            // Clean Modern Block Container (Zero intrusive pills or dividing elements, Premiere Pro style)
             RoundedRectangle(cornerRadius: cornerR)
                 .fill(
                     LinearGradient(
@@ -2244,24 +2320,44 @@ struct KeyframeTimelineItemView: View {
                         .stroke(isSelected ? Color.white : Color.white.opacity(blockW < 8 ? 0.20 : 0.35), lineWidth: isSelected ? 1.5 : (blockW < 8 ? 0.5 : 0.8))
                 )
             
-            // Interactive 3-Zone Layout (Left Trim | Move Body | Right Trim) without visual clutter
+            // Active/Hovered Trim Edge Indicator (Premiere Pro Style)
+            let showingStartTrim = (hoveredEdge == .start && !appState.isScrubbing) || activeDragEdge == .start
+            let showingEndTrim = (hoveredEdge == .end && !appState.isScrubbing) || activeDragEdge == .end
+            
+            if showingStartTrim {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2.5)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.white.opacity(0.85), radius: 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerR))
+                    .allowsHitTesting(false)
+            }
+            
+            if showingEndTrim {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2.5)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.white.opacity(0.85), radius: 2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerR))
+                    .allowsHitTesting(false)
+            }
+            
+            // 3-Zone Invisible Interaction Layer
             HStack(spacing: 0) {
-                // Left Trim Zone (Invisible handle, changes cursor to resizeLeftRight)
-                if blockW >= 24 {
-                    Rectangle()
-                        .fill(Color.white.opacity(0.001))
-                        .frame(width: 8, height: 24)
-                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                // Left Trim Invisible Hotspot
+                if canTrim {
+                    Color.white.opacity(0.0001)
+                        .frame(width: handleW, height: 24)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringLeftHandle = hovering
-                            if hovering {
-                                NSCursor.resizeLeftRight.set()
-                            }
-                        }
                         .highPriorityGesture(
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
+                                    activeDragEdge = .start
+                                    NSCursor.resizeLeftRight.set()
                                     appState.isScrubbing = true
                                     if !appState.selectedKeyframeIDs.contains(currentKf.id) {
                                         activeSidebarTab = "camera"
@@ -2285,6 +2381,7 @@ struct KeyframeTimelineItemView: View {
                                     }
                                 }
                                 .onEnded { _ in
+                                    activeDragEdge = nil
                                     appState.isScrubbing = false
                                     dragStart_StartSec = nil
                                     dragStart_DurSec = nil
@@ -2309,14 +2406,7 @@ struct KeyframeTimelineItemView: View {
                 }
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .background(CustomCursorView(cursor: .openHand))
                 .contentShape(Rectangle())
-                .onHover { hovering in
-                    isHoveringBody = hovering
-                    if hovering {
-                        NSCursor.openHand.set()
-                    }
-                }
                 .onTapGesture {
                     let isShift = NSEvent.modifierFlags.contains(.shift)
                     let isCmd = NSEvent.modifierFlags.contains(.command)
@@ -2326,6 +2416,9 @@ struct KeyframeTimelineItemView: View {
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 3, coordinateSpace: .named("TimelineTrackContainer"))
                         .onChanged { value in
+                            activeDragEdge = nil
+                            hoveredEdge = nil
+                            NSCursor.closedHand.set()
                             if !appState.selectedKeyframeIDs.contains(currentKf.id) {
                                 activeSidebarTab = "camera"
                                 appState.selectKeyframe(id: currentKf.id)
@@ -2359,22 +2452,16 @@ struct KeyframeTimelineItemView: View {
                         }
                 )
                 
-                // Right Trim Zone (Invisible handle, changes cursor to resizeLeftRight)
-                if blockW >= 24 {
-                    Rectangle()
-                        .fill(Color.white.opacity(0.001))
-                        .frame(width: 8, height: 24)
-                        .background(CustomCursorView(cursor: .resizeLeftRight))
+                // Right Trim Invisible Hotspot
+                if canTrim {
+                    Color.white.opacity(0.0001)
+                        .frame(width: handleW, height: 24)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringRightHandle = hovering
-                            if hovering {
-                                NSCursor.resizeLeftRight.set()
-                            }
-                        }
                         .highPriorityGesture(
                             DragGesture(minimumDistance: 1, coordinateSpace: .named("TimelineTrackContainer"))
                                 .onChanged { value in
+                                    activeDragEdge = .end
+                                    NSCursor.resizeLeftRight.set()
                                     appState.isScrubbing = true
                                     if !appState.selectedKeyframeIDs.contains(currentKf.id) {
                                         activeSidebarTab = "camera"
@@ -2398,6 +2485,7 @@ struct KeyframeTimelineItemView: View {
                                     }
                                 }
                                 .onEnded { _ in
+                                    activeDragEdge = nil
                                     appState.isScrubbing = false
                                     dragStart_DurSec = nil
                                     appState.endDragOperation()
@@ -2410,6 +2498,25 @@ struct KeyframeTimelineItemView: View {
         }
         .frame(width: blockW, height: 24)
         .shadow(color: isSelected ? Color.blue.opacity(0.4) : Color.clear, radius: 4, y: 1)
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            guard !appState.isScrubbing else { return }
+            switch phase {
+            case .active(let pt):
+                if canTrim && pt.x <= handleW {
+                    hoveredEdge = .start
+                    NSCursor.resizeLeftRight.set()
+                } else if canTrim && pt.x >= blockW - handleW {
+                    hoveredEdge = .end
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    hoveredEdge = nil
+                    NSCursor.openHand.set()
+                }
+            case .ended:
+                hoveredEdge = nil
+                NSCursor.arrow.set()
+            }
+        }
         .offset(x: xPos)
         .contextMenu {
             // Section 1: Zoom Effect Type

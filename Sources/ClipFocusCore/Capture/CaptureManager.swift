@@ -54,11 +54,13 @@ public final class CaptureManager: @unchecked Sendable {
     /// Start a REAL screen recording session using ScreenCaptureKit and CursorTracker
     public func startRecording(
         mode: String = "Full Screen",
+        targetDisplayID: CGDirectDisplayID? = nil,
         captureMicrophoneAudio: Bool = true,
         captureSystemAudio: Bool = true,
         targetMicrophoneName: String? = nil,
         sourceRect: CGRect? = nil,
         targetWindowID: CGWindowID? = nil,
+        targetWindowCocoaRect: CGRect? = nil,
         excludedWindowIDs: [CGWindowID] = []
     ) async throws {
         checkPermissions()
@@ -85,12 +87,25 @@ public final class CaptureManager: @unchecked Sendable {
         let timestampStr = formatter.string(from: Date())
         let videoURL = outputDir.appendingPathComponent("ClipFocus_\(timestampStr).mov")
         
-        // Find primary display resolution
-        let primaryScreen = NSScreen.screens.first
-        let screenWidth = Int(primaryScreen?.frame.width ?? 1920) * 2 // Retina scale
-        let screenHeight = Int(primaryScreen?.frame.height ?? 1080) * 2
+        // Resolve target screen accurately for external monitor or window recording
+        let targetScreen: NSScreen?
+        if let id = targetDisplayID {
+            targetScreen = NSScreen.screens.first(where: { s in
+                let rawNum = (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+                return (rawNum ?? (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID)) == id
+            })
+        } else if let winRect = targetWindowCocoaRect {
+            targetScreen = NSScreen.screens.first(where: { $0.frame.intersects(winRect) })
+        } else {
+            targetScreen = NSScreen.main ?? NSScreen.screens.first
+        }
+        
+        let scale = targetScreen?.backingScaleFactor ?? 2.0
+        let screenWidth = Int(ceil((targetScreen?.frame.width ?? 1920) * scale))
+        let screenHeight = Int(ceil((targetScreen?.frame.height ?? 1080) * scale))
         
         let config = CaptureSessionConfig(
+            targetDisplayID: targetDisplayID,
             captureWidth: screenWidth > 0 ? screenWidth : 1920,
             captureHeight: screenHeight > 0 ? screenHeight : 1080,
             frameRate: 60,
@@ -102,6 +117,18 @@ public final class CaptureManager: @unchecked Sendable {
             targetWindowID: targetWindowID,
             excludedWindowIDs: excludedWindowIDs
         )
+        
+        // Configure cursor tracker coordinate bounds matching the recorded window or display
+        let captureTargetRect: CGRect
+        if let winRect = targetWindowCocoaRect {
+            captureTargetRect = winRect
+        } else if let crop = sourceRect, let screen = targetScreen {
+            // Convert crop rect to global Cocoa coordinates if needed
+            captureTargetRect = CGRect(x: screen.frame.minX + crop.minX, y: screen.frame.minY + crop.minY, width: crop.width, height: crop.height)
+        } else {
+            captureTargetRect = targetScreen?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        }
+        cursorTracker.setCaptureTargetRect(captureTargetRect)
         
         // Start engine and cursor tracker
         try await captureEngine.startCapture(config: config, outputURL: videoURL)

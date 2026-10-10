@@ -21,9 +21,17 @@ public final class CursorTracker: @unchecked Sendable {
     public weak var delegate: CursorTrackerDelegate?
     
     public private(set) var recordedEvents: [TelemetryEvent] = []
+    public private(set) var captureTargetRect: CGRect? = nil
     private let queue = DispatchQueue(label: "com.clipfocus.telemetry.queue", qos: .userInteractive)
     
     public init() {}
+    
+    /// Set the active Cocoa screen or window bounding rect being recorded to ensure normalized coordinates match the video
+    public func setCaptureTargetRect(_ rect: CGRect?) {
+        queue.sync {
+            self.captureTargetRect = rect
+        }
+    }
     
     public func pauseTracking() {
         queue.sync {
@@ -93,11 +101,10 @@ public final class CursorTracker: @unchecked Sendable {
         let timestamp = max(0.0, rawElapsed - totalPausedDuration)
         
         let screenPoint = NSEvent.mouseLocation
-        let primaryScreen = NSScreen.main ?? NSScreen.screens.first
-        let frame = primaryScreen?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let targetRect = self.captureTargetRect ?? (NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080))
         
-        let normalizedX = max(0.0, min(1.0, (screenPoint.x - frame.origin.x) / frame.width))
-        let normalizedY = max(0.0, min(1.0, (frame.origin.y + frame.height - screenPoint.y) / frame.height))
+        let normalizedX = max(0.0, min(1.0, (screenPoint.x - targetRect.origin.x) / targetRect.width))
+        let normalizedY = max(0.0, min(1.0, (targetRect.origin.y + targetRect.height - screenPoint.y) / targetRect.height))
         let position = CGPoint(x: normalizedX, y: normalizedY)
         
         // Deduplicate micro jitter if stationary, but emit a stationary anchor event every 0.10s
@@ -153,12 +160,11 @@ public final class CursorTracker: @unchecked Sendable {
         let timestamp = max(0.0, rawElapsed - totalPausedDuration)
         
         let screenPoint = NSEvent.mouseLocation
-        let primaryScreen = NSScreen.main ?? NSScreen.screens.first
-        let frame = primaryScreen?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let targetRect = self.captureTargetRect ?? (NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080))
         
         // Convert to normalized coordinates (0.0 to 1.0) with (0,0) as top-left
-        let normalizedX = max(0.0, min(1.0, (screenPoint.x - frame.origin.x) / frame.width))
-        let normalizedY = max(0.0, min(1.0, (frame.origin.y + frame.height - screenPoint.y) / frame.height))
+        let normalizedX = max(0.0, min(1.0, (screenPoint.x - targetRect.origin.x) / targetRect.width))
+        let normalizedY = max(0.0, min(1.0, (targetRect.origin.y + targetRect.height - screenPoint.y) / targetRect.height))
         let position = CGPoint(x: normalizedX, y: normalizedY)
         
         let button: MouseButtonType = (event.type == .rightMouseDown || event.type == .rightMouseDragged) ? .right : .left

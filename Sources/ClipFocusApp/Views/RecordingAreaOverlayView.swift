@@ -163,10 +163,26 @@ public struct RecordingAreaOverlayView: View {
     // MARK: - 3. Window Selection Overlay (Render active or hovered window outline)
     @ViewBuilder
     private func windowSelectionOverlay(screenSize: CGSize) -> some View {
-        let activeFrame = appState.hoveredWindowFrame ?? appState.selectedWindowFrame
+        let activeFrame = appState.selectedWindowFrame ?? appState.hoveredWindowFrame
         
         ZStack {
             if let frame = activeFrame {
+                let primaryH = NSScreen.screens.first?.frame.height ?? 1080
+                // Match screen housing the window
+                let targetScreen = NSScreen.screens.first(where: { screen in
+                    let qX = screen.frame.origin.x
+                    let qY = primaryH - (screen.frame.origin.y + screen.frame.height)
+                    let screenQRect = CGRect(x: qX, y: qY, width: screen.frame.width, height: screen.frame.height)
+                    return screenQRect.intersects(frame)
+                }) ?? NSScreen.screens.first
+                
+                let pScreen = targetScreen ?? NSScreen.screens[0]
+                let panelQuartzX = pScreen.frame.origin.x
+                let panelQuartzY = primaryH - (pScreen.frame.origin.y + pScreen.frame.height)
+                
+                let localX = frame.origin.x - panelQuartzX
+                let localY = frame.origin.y - panelQuartzY
+                
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(
                         Color(red: 0.05, green: 0.80, blue: 1.0),
@@ -175,7 +191,7 @@ public struct RecordingAreaOverlayView: View {
                     .background(Color(red: 0.05, green: 0.80, blue: 1.0).opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .frame(width: frame.width, height: frame.height)
-                    .position(x: frame.midX, y: frame.midY)
+                    .position(x: localX + frame.width / 2, y: localY + frame.height / 2)
             }
         }
         .allowsHitTesting(false)

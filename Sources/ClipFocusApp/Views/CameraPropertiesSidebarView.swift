@@ -81,11 +81,38 @@ public struct CameraPropertiesSidebarView: View {
     private func activeKeyframeContent(idx: Int) -> some View {
         let kf = appState.zoomKeyframes[idx]
         
-        // 1. Header Title
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Zoom & 3D Settings")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
+        // 1. Header Title & Multi-Selection Badge
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Zoom & 3D Settings")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                
+                Spacer()
+                
+                if appState.selectedKeyframeIDs.count > 1 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.stack.3d.up.fill")
+                            .font(.system(size: 9))
+                        Text("\(appState.selectedKeyframeIDs.count) Blocks Selected")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.cyan.opacity(0.16))
+                    .clipShape(Capsule())
+                    .overlay(
+                        Capsule().stroke(Color.cyan.opacity(0.35), lineWidth: 1)
+                    )
+                }
+            }
+            
+            if appState.selectedKeyframeIDs.count > 1 {
+                Text("Multi-edit mode: changes apply simultaneously to all \(appState.selectedKeyframeIDs.count) selected blocks.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.cyan.opacity(0.9))
+            }
         }
         
         // 2. Zoom Effect Mode: [ 2D Zoom ]  [ 3D Motion ]
@@ -100,20 +127,12 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "viewfinder",
                     isSelected: kf.effectType == .zoom2D
                 ) {
-                    if appState.selectedKeyframeIDs.count > 1 {
-                        for i in 0..<appState.zoomKeyframes.count {
-                            if appState.selectedKeyframeIDs.contains(appState.zoomKeyframes[i].id) {
-                                appState.zoomKeyframes[i].effectType = .zoom2D
-                                appState.zoomKeyframes[i].tiltPreset = .flat
-                            }
-                        }
-                    } else {
-                        appState.zoomKeyframes[idx].effectType = .zoom2D
-                        appState.zoomKeyframes[idx].tiltPreset = .flat
+                    appState.mutateSelectedKeyframes { item in
+                        item.effectType = .zoom2D
+                        item.tiltPreset = .flat
                     }
                     appState.selectedEffectType = .zoom2D
                     appState.selectedTiltPreset = .flat
-                    appState.evaluateCurrentZoom()
                 }
                 
                 zoomModeButton(
@@ -121,23 +140,13 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "cube.fill",
                     isSelected: kf.effectType == .motion3D
                 ) {
-                    if appState.selectedKeyframeIDs.count > 1 {
-                        for i in 0..<appState.zoomKeyframes.count {
-                            if appState.selectedKeyframeIDs.contains(appState.zoomKeyframes[i].id) {
-                                appState.zoomKeyframes[i].effectType = .motion3D
-                                if appState.zoomKeyframes[i].tiltPreset == .flat {
-                                    appState.zoomKeyframes[i].tiltPreset = .auto
-                                }
-                            }
-                        }
-                    } else {
-                        appState.zoomKeyframes[idx].effectType = .motion3D
-                        if appState.zoomKeyframes[idx].tiltPreset == .flat {
-                            appState.zoomKeyframes[idx].tiltPreset = .auto
+                    appState.mutateSelectedKeyframes { item in
+                        item.effectType = .motion3D
+                        if item.tiltPreset == .flat {
+                            item.tiltPreset = .auto
                         }
                     }
                     appState.selectedEffectType = .motion3D
-                    appState.evaluateCurrentZoom()
                 }
             }
         }
@@ -152,8 +161,10 @@ public struct CameraPropertiesSidebarView: View {
                 Spacer()
                 
                 resetIconButton(action: {
-                    appState.zoomKeyframes[idx].scale = 1.0
-                    appState.evaluateCurrentZoom()
+                    appState.mutateSelectedKeyframes { item in
+                        item.scale = 1.0
+                    }
+                    appState.defaultZoomScale = 1.0
                 }, help: "Reset scale to 1.0X")
                 
                 Text(kf.scale <= 1.05 ? "1.0X" : String(format: "%.1fX", kf.scale))
@@ -166,9 +177,10 @@ public struct CameraPropertiesSidebarView: View {
                 ForEach([1.3, 1.5, 2.0, 2.5, 3.0], id: \.self) { preset in
                     let isMatched = abs(kf.scale - preset) < 0.08
                     Button(action: {
-                        appState.zoomKeyframes[idx].scale = preset
+                        appState.mutateSelectedKeyframes { item in
+                            item.scale = preset
+                        }
                         appState.defaultZoomScale = preset
-                        appState.evaluateCurrentZoom()
                     }) {
                         Text(String(format: "%.1fx", preset))
                             .font(.system(size: 10, weight: isMatched ? .bold : .medium))
@@ -188,10 +200,11 @@ public struct CameraPropertiesSidebarView: View {
                 value: Binding(
                     get: { idx < appState.zoomKeyframes.count ? appState.zoomKeyframes[idx].scale : 1.0 },
                     set: { val in
-                        guard idx < appState.zoomKeyframes.count else { return }
-                        appState.zoomKeyframes[idx].scale = max(1.0, min(4.0, val))
-                        appState.defaultZoomScale = val
-                        appState.evaluateCurrentZoom()
+                        let clamped = max(1.0, min(4.0, val))
+                        appState.mutateSelectedKeyframes { item in
+                            item.scale = clamped
+                        }
+                        appState.defaultZoomScale = clamped
                     }
                 ),
                 in: 1.0...4.0
@@ -230,9 +243,12 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "square",
                     isSelected: kf.tiltPreset == .flat
                 ) {
-                    appState.zoomKeyframes[idx].tiltPreset = .flat
-                    appState.zoomKeyframes[idx].effectType = .zoom2D
-                    appState.evaluateCurrentZoom()
+                    appState.mutateSelectedKeyframes { item in
+                        item.tiltPreset = .flat
+                        item.effectType = .zoom2D
+                    }
+                    appState.selectedTiltPreset = .flat
+                    appState.selectedEffectType = .zoom2D
                 }
                 
                 tiltModeButton(
@@ -240,9 +256,12 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "cube.fill",
                     isSelected: kf.tiltPreset == .auto
                 ) {
-                    appState.zoomKeyframes[idx].tiltPreset = .auto
-                    appState.zoomKeyframes[idx].effectType = .motion3D
-                    appState.evaluateCurrentZoom()
+                    appState.mutateSelectedKeyframes { item in
+                        item.tiltPreset = .auto
+                        item.effectType = .motion3D
+                    }
+                    appState.selectedTiltPreset = .auto
+                    appState.selectedEffectType = .motion3D
                 }
                 
                 tiltModeButton(
@@ -250,14 +269,17 @@ public struct CameraPropertiesSidebarView: View {
                     icon: "slider.horizontal.3",
                     isSelected: kf.tiltPreset == .custom
                 ) {
-                    appState.zoomKeyframes[idx].tiltPreset = .custom
-                    appState.zoomKeyframes[idx].effectType = .motion3D
-                    // If all angles are 0, seed with beautiful continuous perspective angles
-                    if kf.customPitch == 0 && kf.customYaw == 0 {
-                        appState.zoomKeyframes[idx].customPitch = -10.0
-                        appState.zoomKeyframes[idx].customYaw = 14.0
+                    appState.mutateSelectedKeyframes { item in
+                        item.tiltPreset = .custom
+                        item.effectType = .motion3D
+                        // If all angles are 0, seed with beautiful continuous perspective angles
+                        if item.customPitch == 0 && item.customYaw == 0 {
+                            item.customPitch = -10.0
+                            item.customYaw = 14.0
+                        }
                     }
-                    appState.evaluateCurrentZoom()
+                    appState.selectedTiltPreset = .custom
+                    appState.selectedEffectType = .motion3D
                 }
             }
             
@@ -326,10 +348,10 @@ public struct CameraPropertiesSidebarView: View {
                     label: "Pitch (X-Axis)",
                     value: Binding(
                         get: { idx < appState.zoomKeyframes.count ? appState.zoomKeyframes[idx].customPitch : 0.0 },
-                        set: {
-                            guard idx < appState.zoomKeyframes.count else { return }
-                            appState.zoomKeyframes[idx].customPitch = $0
-                            appState.evaluateCurrentZoom()
+                        set: { val in
+                            appState.mutateSelectedKeyframes { item in
+                                item.customPitch = val
+                            }
                         }
                     ),
                     range: -45.0...45.0
@@ -340,10 +362,10 @@ public struct CameraPropertiesSidebarView: View {
                     label: "Yaw (Y-Axis)",
                     value: Binding(
                         get: { idx < appState.zoomKeyframes.count ? appState.zoomKeyframes[idx].customYaw : 0.0 },
-                        set: {
-                            guard idx < appState.zoomKeyframes.count else { return }
-                            appState.zoomKeyframes[idx].customYaw = $0
-                            appState.evaluateCurrentZoom()
+                        set: { val in
+                            appState.mutateSelectedKeyframes { item in
+                                item.customYaw = val
+                            }
                         }
                     ),
                     range: -45.0...45.0
@@ -354,10 +376,10 @@ public struct CameraPropertiesSidebarView: View {
                     label: "Roll (Z-Axis)",
                     value: Binding(
                         get: { idx < appState.zoomKeyframes.count ? appState.zoomKeyframes[idx].customRoll : 0.0 },
-                        set: {
-                            guard idx < appState.zoomKeyframes.count else { return }
-                            appState.zoomKeyframes[idx].customRoll = $0
-                            appState.evaluateCurrentZoom()
+                        set: { val in
+                            appState.mutateSelectedKeyframes { item in
+                                item.customRoll = val
+                            }
                         }
                     ),
                     range: -30.0...30.0
@@ -380,18 +402,19 @@ public struct CameraPropertiesSidebarView: View {
                     Text("X Offset").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
                     resetIconButton(action: {
-                        appState.zoomKeyframes[idx].positionOffsetX = 0
-                        appState.evaluateCurrentZoom()
+                        appState.mutateSelectedKeyframes { item in
+                            item.positionOffsetX = 0
+                        }
                     }, help: "Reset X Offset to 0")
                     Text("\(Int(kf.positionOffsetX))").font(.system(size: 10, design: .monospaced)).foregroundStyle(.white)
                 }
                 Slider(
                     value: Binding(
                         get: { idx < appState.zoomKeyframes.count ? appState.zoomKeyframes[idx].positionOffsetX : 0 },
-                        set: {
-                            guard idx < appState.zoomKeyframes.count else { return }
-                            appState.zoomKeyframes[idx].positionOffsetX = $0
-                            appState.evaluateCurrentZoom()
+                        set: { val in
+                            appState.mutateSelectedKeyframes { item in
+                                item.positionOffsetX = val
+                            }
                         }
                     ),
                     in: -100...100
@@ -405,18 +428,19 @@ public struct CameraPropertiesSidebarView: View {
                     Text("Y Offset").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
                     resetIconButton(action: {
-                        appState.zoomKeyframes[idx].positionOffsetY = 0
-                        appState.evaluateCurrentZoom()
+                        appState.mutateSelectedKeyframes { item in
+                            item.positionOffsetY = 0
+                        }
                     }, help: "Reset Y Offset to 0")
                     Text("\(Int(kf.positionOffsetY))").font(.system(size: 10, design: .monospaced)).foregroundStyle(.white)
                 }
                 Slider(
                     value: Binding(
                         get: { idx < appState.zoomKeyframes.count ? appState.zoomKeyframes[idx].positionOffsetY : 0 },
-                        set: {
-                            guard idx < appState.zoomKeyframes.count else { return }
-                            appState.zoomKeyframes[idx].positionOffsetY = $0
-                            appState.evaluateCurrentZoom()
+                        set: { val in
+                            appState.mutateSelectedKeyframes { item in
+                                item.positionOffsetY = val
+                            }
                         }
                     ),
                     in: -100...100
@@ -511,10 +535,11 @@ public struct CameraPropertiesSidebarView: View {
     ) -> some View {
         let isMatch = abs(currentPitch - pitch) < 1.0 && abs(currentYaw - yaw) < 1.0
         Button(action: {
-            appState.zoomKeyframes[idx].customPitch = pitch
-            appState.zoomKeyframes[idx].customYaw = yaw
-            appState.zoomKeyframes[idx].customRoll = 0.0
-            appState.evaluateCurrentZoom()
+            appState.mutateSelectedKeyframes { item in
+                item.customPitch = pitch
+                item.customYaw = yaw
+                item.customRoll = 0.0
+            }
         }) {
             Text(title)
                 .font(.system(size: 10, weight: isMatch ? .bold : .medium))

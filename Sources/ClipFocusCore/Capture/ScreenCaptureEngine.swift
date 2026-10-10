@@ -176,15 +176,23 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             }
             
             let filter: SCContentFilter
+            let display: SCDisplay
+            
+            // Resolve target display (supports external monitors and multi-monitor setups)
+            if let targetID = config.targetDisplayID,
+               let matched = availableContent.displays.first(where: { $0.displayID == targetID }) {
+                display = matched
+            } else if let first = availableContent.displays.first {
+                display = first
+            } else {
+                cleanup()
+                throw NSError(domain: "ClipFocusCapture", code: 404, userInfo: [NSLocalizedDescriptionKey: "No active display found."])
+            }
+            
             if let targetWindowID = config.targetWindowID,
                let targetWindow = availableContent.windows.first(where: { $0.windowID == targetWindowID }) {
                 filter = SCContentFilter(desktopIndependentWindow: targetWindow)
             } else {
-                guard let display = availableContent.displays.first else {
-                    cleanup()
-                    throw NSError(domain: "ClipFocusCapture", code: 404, userInfo: [NSLocalizedDescriptionKey: "No active display found."])
-                }
-                
                 if !clipApps.isEmpty {
                     filter = SCContentFilter(display: display, excludingApplications: clipApps, exceptingWindows: [])
                 } else if #available(macOS 14.0, *) {
@@ -194,19 +202,37 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
                 }
             }
             
-            // Determine final recording dimensions
+            // Determine final recording dimensions using true physical display pixels
             var finalWidth = config.captureWidth
             var finalHeight = config.captureHeight
             
             let streamConfig = SCStreamConfiguration()
+            let displayMode = CGDisplayCopyDisplayMode(display.displayID)
+            let pixelScale: CGFloat = {
+                if let mode = displayMode, mode.width > 0 {
+                    return CGFloat(mode.pixelWidth) / CGFloat(mode.width)
+                }
+                return 2.0
+            }()
+            
             if let crop = config.sourceRect, crop.width > 0 && crop.height > 0 {
                 streamConfig.sourceRect = crop
-                finalWidth = Int(crop.width) * 2
-                finalHeight = Int(crop.height) * 2
+                finalWidth = Int(ceil(crop.width * pixelScale))
+                finalHeight = Int(ceil(crop.height * pixelScale))
             } else if let targetWindowID = config.targetWindowID,
                       let targetWindow = availableContent.windows.first(where: { $0.windowID == targetWindowID }) {
-                finalWidth = Int(targetWindow.frame.width) * 2
-                finalHeight = Int(targetWindow.frame.height) * 2
+                // Ensure crisp Retina scaling for the target window
+                finalWidth = Int(ceil(targetWindow.frame.width * pixelScale))
+                finalHeight = Int(ceil(targetWindow.frame.height * pixelScale))
+            } else {
+                // Use true physical pixel resolution of target display (e.g. 2880x1800 for Retina MacBook, 4K for 4K external)
+                if let mode = displayMode, mode.pixelWidth > 0 && mode.pixelHeight > 0 {
+                    finalWidth = mode.pixelWidth
+                    finalHeight = mode.pixelHeight
+                } else {
+                    finalWidth = Int(CGFloat(display.width) * pixelScale)
+                    finalHeight = Int(CGFloat(display.height) * pixelScale)
+                }
             }
             
             // Make dimensions even for H.264 encoder compatibility
@@ -232,12 +258,15 @@ public final class ScreenCaptureEngine: NSObject, SCStreamDelegate, SCStreamOutp
             // Setup AVAssetWriter for hardware H.264 / HEVC video encoding
             let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
             
+            let isHighRes = targetWidth >= 2560 || targetHeight >= 1440
+            let targetBitrate = isHighRes ? 28_000_000 : 16_000_000
+            
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: targetWidth,
                 AVVideoHeightKey: targetHeight,
                 AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: 15_000_000, // 15 Mbps pristine quality
+                    AVVideoAverageBitRateKey: targetBitrate, // 28 Mbps for Retina/4K, 16 Mbps for standard HD
                     AVVideoExpectedSourceFrameRateKey: config.frameRate,
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
                 ]

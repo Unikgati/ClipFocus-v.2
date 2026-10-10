@@ -13,6 +13,35 @@ public enum AppViewMode {
     case editor
 }
 
+public struct DisplayInfo: Identifiable, Sendable {
+    public let id: CGDirectDisplayID
+    public let name: String
+    public let frame: CGRect
+    public let isMain: Bool
+    
+    public init(id: CGDirectDisplayID, name: String, frame: CGRect, isMain: Bool) {
+        self.id = id
+        self.name = name
+        self.frame = frame
+        self.isMain = isMain
+    }
+}
+
+public struct RecordedWindowInfo: Identifiable, Sendable {
+    public let windowID: CGWindowID
+    public var id: CGWindowID { windowID }
+    public let appName: String
+    public let title: String
+    public let frame: CGRect
+    
+    public init(windowID: CGWindowID, appName: String, title: String, frame: CGRect) {
+        self.windowID = windowID
+        self.appName = appName
+        self.title = title
+        self.frame = frame
+    }
+}
+
 public enum RecordingMode: String, CaseIterable, Identifiable {
     case fullScreen = "Full Screen"
     case custom = "Custom"
@@ -94,6 +123,25 @@ public final class AppState: @unchecked Sendable {
     public var hoveredWindowID: CGWindowID? = nil
     public var hoveredWindowFrame: CGRect? = nil
     public var hoveredWindowName: String? = nil
+    public var availableWindows: [RecordedWindowInfo] = []
+    
+    // External Displays & Multi-Monitor Support
+    public var availableDisplays: [DisplayInfo] = []
+    public var selectedDisplayID: CGDirectDisplayID? = nil {
+        didSet {
+            DispatchQueue.main.async {
+                WindowManager.shared.repositionAreaOverlay()
+                WindowManager.shared.repositionFloatingBar()
+            }
+        }
+    }
+    
+    public var selectedDisplayName: String {
+        if let id = selectedDisplayID, let match = availableDisplays.first(where: { $0.id == id }) {
+            return match.name
+        }
+        return availableDisplays.first?.name ?? "Main Display"
+    }
     
     // Real Video Recording, Playback & Project File Management
     public var recordedVideoURL: URL? = nil
@@ -220,6 +268,22 @@ public final class AppState: @unchecked Sendable {
         return nil
     }
 
+    /// Mutates all currently selected keyframes (or the single active keyframe if only one is selected).
+    /// Ensures 100% production-ready batch editing across multi-selections.
+    public func mutateSelectedKeyframes(_ mutation: (inout ZoomKeyframe) -> Void) {
+        if selectedKeyframeIDs.count > 1 {
+            for i in 0..<zoomKeyframes.count {
+                if selectedKeyframeIDs.contains(zoomKeyframes[i].id) {
+                    mutation(&zoomKeyframes[i])
+                }
+            }
+        } else if let idx = selectedKeyframeIndex() {
+            mutation(&zoomKeyframes[idx])
+        }
+        self.isDirty = true
+        evaluateCurrentZoom()
+    }
+
     // Zoom scale of the currently selected keyframe or default (1.0x to 4.0x)
     public var activeZoomScale: CGFloat {
         get {
@@ -231,10 +295,9 @@ public final class AppState: @unchecked Sendable {
         set {
             let clamped = max(1.0, min(4.0, newValue))
             defaultZoomScale = clamped
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].scale = clamped
+            mutateSelectedKeyframes { kf in
+                kf.scale = clamped
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -247,19 +310,21 @@ public final class AppState: @unchecked Sendable {
         }
         set {
             selectedEffectType = newValue
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].effectType = newValue
+            mutateSelectedKeyframes { kf in
+                kf.effectType = newValue
                 if newValue == .zoom2D {
-                    zoomKeyframes[idx].tiltPreset = .flat
-                    selectedTiltPreset = .flat
+                    kf.tiltPreset = .flat
                 } else if newValue == .motion3D {
-                    if zoomKeyframes[idx].tiltPreset == .flat {
-                        zoomKeyframes[idx].tiltPreset = .auto
-                        selectedTiltPreset = .auto
+                    if kf.tiltPreset == .flat {
+                        kf.tiltPreset = .auto
                     }
                 }
             }
-            evaluateCurrentZoom()
+            if newValue == .zoom2D {
+                selectedTiltPreset = .flat
+            } else if selectedTiltPreset == .flat {
+                selectedTiltPreset = .auto
+            }
         }
     }
     
@@ -272,33 +337,31 @@ public final class AppState: @unchecked Sendable {
         }
         set {
             selectedTiltPreset = newValue
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].tiltPreset = newValue
+            mutateSelectedKeyframes { kf in
+                kf.tiltPreset = newValue
                 if newValue == .custom {
-                    zoomKeyframes[idx].effectType = .motion3D
-                    selectedEffectType = .motion3D
+                    kf.effectType = .motion3D
                     // If custom angles are all zero, inherit current auto angles so transition to custom is continuous
-                    if zoomKeyframes[idx].customPitch == 0 && zoomKeyframes[idx].customYaw == 0 && zoomKeyframes[idx].customRoll == 0 {
-                        let autoAngles = TiltPreset.auto.angles(focusPoint: zoomKeyframes[idx].focusPoint)
+                    if kf.customPitch == 0 && kf.customYaw == 0 && kf.customRoll == 0 {
+                        let autoAngles = TiltPreset.auto.angles(focusPoint: kf.focusPoint)
                         let seededPitch = autoAngles.pitch != 0 ? autoAngles.pitch : -8.0
                         let seededYaw = autoAngles.yaw != 0 ? autoAngles.yaw : 12.0
                         let seededRoll = autoAngles.roll
-                        zoomKeyframes[idx].customPitch = seededPitch
-                        zoomKeyframes[idx].customYaw = seededYaw
-                        zoomKeyframes[idx].customRoll = seededRoll
-                        self.customPitch = seededPitch
-                        self.customYaw = seededYaw
-                        self.customRoll = seededRoll
+                        kf.customPitch = seededPitch
+                        kf.customYaw = seededYaw
+                        kf.customRoll = seededRoll
                     }
                 } else if newValue == .auto {
-                    zoomKeyframes[idx].effectType = .motion3D
-                    selectedEffectType = .motion3D
+                    kf.effectType = .motion3D
                 } else if newValue == .flat {
-                    zoomKeyframes[idx].effectType = .zoom2D
-                    selectedEffectType = .zoom2D
+                    kf.effectType = .zoom2D
                 }
             }
-            evaluateCurrentZoom()
+            if newValue == .custom || newValue == .auto {
+                selectedEffectType = .motion3D
+            } else if newValue == .flat {
+                selectedEffectType = .zoom2D
+            }
         }
     }
     
@@ -313,12 +376,11 @@ public final class AppState: @unchecked Sendable {
         set {
             customPitch = newValue
             selectedTiltPreset = .custom
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].customPitch = newValue
-                zoomKeyframes[idx].tiltPreset = .custom
-                zoomKeyframes[idx].effectType = .motion3D
+            mutateSelectedKeyframes { kf in
+                kf.customPitch = newValue
+                kf.tiltPreset = .custom
+                kf.effectType = .motion3D
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -332,12 +394,11 @@ public final class AppState: @unchecked Sendable {
         set {
             customYaw = newValue
             selectedTiltPreset = .custom
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].customYaw = newValue
-                zoomKeyframes[idx].tiltPreset = .custom
-                zoomKeyframes[idx].effectType = .motion3D
+            mutateSelectedKeyframes { kf in
+                kf.customYaw = newValue
+                kf.tiltPreset = .custom
+                kf.effectType = .motion3D
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -351,12 +412,11 @@ public final class AppState: @unchecked Sendable {
         set {
             customRoll = newValue
             selectedTiltPreset = .custom
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].customRoll = newValue
-                zoomKeyframes[idx].tiltPreset = .custom
-                zoomKeyframes[idx].effectType = .motion3D
+            mutateSelectedKeyframes { kf in
+                kf.customRoll = newValue
+                kf.tiltPreset = .custom
+                kf.effectType = .motion3D
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -369,10 +429,9 @@ public final class AppState: @unchecked Sendable {
         }
         set {
             positionOffsetX = newValue
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].positionOffsetX = newValue
+            mutateSelectedKeyframes { kf in
+                kf.positionOffsetX = newValue
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -385,10 +444,9 @@ public final class AppState: @unchecked Sendable {
         }
         set {
             positionOffsetY = newValue
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].positionOffsetY = newValue
+            mutateSelectedKeyframes { kf in
+                kf.positionOffsetY = newValue
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -401,10 +459,9 @@ public final class AppState: @unchecked Sendable {
         }
         set {
             let clamped = max(0.5, min(totalDuration, newValue))
-            if let idx = selectedKeyframeIndex() {
-                zoomKeyframes[idx].duration = clamped
+            mutateSelectedKeyframes { kf in
+                kf.duration = clamped
             }
-            evaluateCurrentZoom()
         }
     }
     
@@ -566,9 +623,46 @@ public final class AppState: @unchecked Sendable {
         }
     }
     
+    public func refreshAvailableDisplays() {
+        var list: [DisplayInfo] = []
+        for screen in NSScreen.screens {
+            let rawNum = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            if let id = rawNum ?? (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) {
+                let name = screen.localizedName
+                list.append(DisplayInfo(id: id, name: name, frame: screen.frame, isMain: screen == NSScreen.screens.first))
+            }
+        }
+        self.availableDisplays = list
+        
+        let mouseLoc = NSEvent.mouseLocation
+        let currentScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) })
+        let currentRawNum = (currentScreen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let currentScreenID = currentRawNum ?? (currentScreen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID)
+        
+        if self.selectedDisplayID == nil || !list.contains(where: { $0.id == self.selectedDisplayID }) {
+            if let curID = currentScreenID, list.contains(where: { $0.id == curID }) {
+                self.selectedDisplayID = curID
+            } else {
+                self.selectedDisplayID = list.first?.id
+            }
+        }
+    }
+    
     /// User selects a mode on the launcher (e.g. Full Screen) -> opens the bottom floating control bar
     public func selectMode(_ mode: RecordingMode) {
         self.selectedMode = mode
+        refreshAvailableDisplays()
+        
+        // If clicking Full Screen from a specific monitor, default to that monitor
+        let mouseLoc = NSEvent.mouseLocation
+        if let currentScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) }) {
+            let currentRawNum = (currentScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            if let curID = currentRawNum ?? (currentScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID),
+               availableDisplays.contains(where: { $0.id == curID }) {
+                self.selectedDisplayID = curID
+            }
+        }
+        
         self.currentView = .floatingControlBar
     }
     
@@ -626,6 +720,7 @@ public final class AppState: @unchecked Sendable {
             do {
                 var sourceRect: CGRect? = nil
                 var targetWindowID: CGWindowID? = nil
+                var targetWindowCocoaRect: CGRect? = nil
                 
                 switch self.selectedMode {
                 case .fullScreen, .none:
@@ -640,6 +735,10 @@ public final class AppState: @unchecked Sendable {
                         targetWindowID = winID
                     } else if let hoverID = self.hoveredWindowID {
                         targetWindowID = hoverID
+                    } else if let firstWin = self.availableWindows.first {
+                        targetWindowID = firstWin.windowID
+                        self.selectedWindowID = firstWin.windowID
+                        self.selectedWindowFrame = firstWin.frame
                     } else {
                         // Auto-discover topmost non-ClipFocus active window
                         let excluded = WindowManager.shared.allClipFocusWindowIDs()
@@ -651,7 +750,22 @@ public final class AppState: @unchecked Sendable {
                                 w.owningApplication?.applicationName != "ClipFocus"
                             }
                             targetWindowID = topWin?.windowID
+                            if let win = topWin {
+                                self.selectedWindowID = win.windowID
+                                self.selectedWindowFrame = win.frame
+                            }
                         }
+                    }
+                    
+                    if let winID = targetWindowID,
+                       let win = self.availableWindows.first(where: { $0.windowID == winID }) ?? (self.selectedWindowFrame.map { RecordedWindowInfo(windowID: winID, appName: "", title: "", frame: $0) }) {
+                        let primaryH = NSScreen.screens.first?.frame.height ?? 1080
+                        targetWindowCocoaRect = CGRect(
+                            x: win.frame.origin.x,
+                            y: primaryH - win.frame.origin.y - win.frame.height,
+                            width: win.frame.width,
+                            height: win.frame.height
+                        )
                     }
                 }
                 
@@ -662,11 +776,13 @@ public final class AppState: @unchecked Sendable {
                 
                 try await self.captureManager.startRecording(
                     mode: self.selectedMode?.rawValue ?? "Full Screen",
+                    targetDisplayID: self.selectedDisplayID,
                     captureMicrophoneAudio: isMicActive,
                     captureSystemAudio: isAudioActive,
                     targetMicrophoneName: isMicActive ? self.selectedMic : nil,
                     sourceRect: sourceRect,
                     targetWindowID: targetWindowID,
+                    targetWindowCocoaRect: targetWindowCocoaRect,
                     excludedWindowIDs: excluded
                 )
                 self.currentView = .recording

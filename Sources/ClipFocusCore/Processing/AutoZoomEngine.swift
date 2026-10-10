@@ -849,23 +849,31 @@ public final class AutoZoomEngine: @unchecked Sendable {
                 let progress = (time - effectiveZoomOutStart) / durationOut
                 let eased = easyEaseInOut(progress)
                 let currentScale = kf.scale - (kf.scale - 1.0) * CGFloat(eased)
-                // Origin anchor at start of zoom-out (fixed anchor eliminates wobble during departure)
-                let startFocus = smoothCameraFocus(at: effectiveZoomOutStart + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
                 
-                let currentX = startFocus.x - (startFocus.x - 0.5) * CGFloat(eased)
-                let currentY = startFocus.y - (startFocus.y - 0.5) * CGFloat(eased)
-                let currentFocus = CGPoint(x: currentX, y: currentY)
+                // Continuous dynamic radar tracking during zoom-out:
+                // Evaluates live Steadicam cursor focus at current timestamp (time + timeOffset) with dynamic scale.
+                // Ensures that if the cursor moves towards edges or exits the camera frame during zoom out (e.g. at timeline end),
+                // the camera smoothly maintains momentum and follows the cursor as the frame widens, easing into (0.5, 0.5)
+                // without abrupt velocity reversal, jerking, or frozen anchor snap!
+                let liveFocus = smoothCameraFocus(at: time + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: currentScale)
                 
-                let startAngles = is3D ? kf.tiltPreset.angles(
-                    focusPoint: startFocus,
+                let currentX = liveFocus.x + (0.5 - liveFocus.x) * CGFloat(eased)
+                let currentY = liveFocus.y + (0.5 - liveFocus.y) * CGFloat(eased)
+                let currentFocus = CGPoint(
+                    x: max(0.0, min(1.0, currentX)),
+                    y: max(0.0, min(1.0, currentY))
+                )
+                
+                let liveAngles = is3D ? kf.tiltPreset.angles(
+                    focusPoint: liveFocus,
                     customPitch: kf.customPitch,
                     customYaw: kf.customYaw,
                     customRoll: kf.customRoll
                 ) : (pitch: 0.0, yaw: 0.0, roll: 0.0)
                 
-                let currentPitch = startAngles.pitch * (1.0 - eased)
-                let currentYaw = startAngles.yaw * (1.0 - eased)
-                let currentRoll = startAngles.roll * (1.0 - eased)
+                let currentPitch = liveAngles.pitch * (1.0 - eased)
+                let currentYaw = liveAngles.yaw * (1.0 - eased)
+                let currentRoll = liveAngles.roll * (1.0 - eased)
                 let curPosX = kf.positionOffsetX * CGFloat(1.0 - eased)
                 let curPosY = kf.positionOffsetY * CGFloat(1.0 - eased)
                 
