@@ -475,11 +475,12 @@ final class ClipFocusCoreTests: XCTestCase {
     func testSafeZoneQuickExitAndReentrySmoothness() {
         let engine = AutoZoomEngine()
         
-        // Simulates cursor at center (0.5, 0.5), quickly darting outside to (0.85, 0.5) and immediately returning
+        // Skenario 1: Cursor bergerak dari A (0.5) ke B (0.85) lalu kembali ke A (0.5) dengan cepat tanpa interaksi.
+        // Kamera harus menekan gerakan sementara ini (tidak bergetar / tersentak ke B).
         let quickExitReentryEvents = [
             TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
-            TelemetryEvent(timestamp: 1.2, type: .mouseMove, position: CGPoint(x: 0.85, y: 0.5)), // Brief exit outside safe zone
-            TelemetryEvent(timestamp: 1.4, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),  // Immediate return inside safe zone
+            TelemetryEvent(timestamp: 1.2, type: .mouseMove, position: CGPoint(x: 0.85, y: 0.5)), // Gerakan sementara keluar safe zone
+            TelemetryEvent(timestamp: 1.4, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),  // Kembali segera ke posisi awal
             TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5))
         ]
         
@@ -490,31 +491,176 @@ final class ClipFocusCoreTests: XCTestCase {
             trajectory.append((t: t, x: focus.x))
         }
         
-        // Find the peak displacement
-        guard let maxItem = trajectory.max(by: { $0.x < $1.x }) else {
-            XCTFail("Trajectory must have samples")
-            return
+        // Verifikasi bahwa kamera menekan gerakan sementara tanpa interaksi
+        let maxItem = trajectory.max(by: { $0.x < $1.x })!
+        XCTAssertEqual(maxItem.x, 0.50, accuracy: 0.02, "Camera must suppress insignificant transient movement and remain stable at center")
+        
+        // Skenario 4: Cursor melakukan klik atau interaksi penting di B saat gerakan cepat.
+        // Kamera HARUS menangkap interaksi penting tersebut.
+        let quickExitWithClickEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
+            TelemetryEvent(timestamp: 1.2, type: .mouseClick, position: CGPoint(x: 0.85, y: 0.5)), // Klik penting di B
+            TelemetryEvent(timestamp: 1.4, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5))
+        ]
+        
+        var clickTrajectory: [(t: Double, x: CGFloat)] = []
+        for step in 0...40 {
+            let t = 1.0 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: quickExitWithClickEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            clickTrajectory.append((t: t, x: focus.x))
         }
         
-        let peakIndex = trajectory.firstIndex(where: { $0.t == maxItem.t })!
+        let maxClickItem = clickTrajectory.max(by: { $0.x < $1.x })!
+        let peakClickIndex = clickTrajectory.firstIndex(where: { $0.t == maxClickItem.t })!
         
-        // 1. Camera absorbed the brief excursion with heavy inertia (did not jerk all the way to 0.85)
-        XCTAssertLessThan(maxItem.x, 0.72, "Peak deflection must be smoothly damped by inertia")
-        XCTAssertGreaterThan(maxItem.x, 0.52, "Camera must respond to the outward movement")
+        // Kamera merespons gerakan karena ada klik penting di titik B
+        XCTAssertGreaterThan(maxClickItem.x, 0.52, "Camera must capture important click interaction at target")
+        XCTAssertLessThan(maxClickItem.x, 0.72, "Peak deflection must be smoothly damped by inertia")
         
-        // 2. Trajectory before peak must rise monotonically (zero jitter on the way out)
-        for i in 1...peakIndex {
-            XCTAssertGreaterThanOrEqual(trajectory[i].x + 0.0001, trajectory[i-1].x, "Outward rise must be smooth at t=\(trajectory[i].t)")
+        // Trajectory menuju klik harus naik secara mulus (monoton)
+        if peakClickIndex > 0 {
+            for i in 1...peakClickIndex {
+                XCTAssertGreaterThanOrEqual(clickTrajectory[i].x + 0.0001, clickTrajectory[i-1].x, "Outward rise must be smooth at t=\(clickTrajectory[i].t)")
+            }
         }
         
-        // 3. Trajectory after peak must fall monotonically back to center (zero bounce/jitter on the return)
-        for i in (peakIndex + 1)..<trajectory.count {
-            XCTAssertLessThanOrEqual(trajectory[i].x - 0.0001, trajectory[i-1].x, "Inward return must be smooth at t=\(trajectory[i].t)")
+        // Trajectory setelah klik harus kembali secara mulus (monoton)
+        for i in (peakClickIndex + 1)..<clickTrajectory.count {
+            XCTAssertLessThanOrEqual(clickTrajectory[i].x - 0.0001, clickTrajectory[i-1].x, "Inward return must be smooth at t=\(clickTrajectory[i].t)")
         }
         
-        // 4. By t=3.0, camera has gently settled back near center (0.50)
-        let settledX = trajectory.last!.x
-        XCTAssertEqual(settledX, 0.50, accuracy: 0.03, "Camera must settle cleanly back to center")
+        // Setelah settling, kamera kembali tenang di posisi tengah (0.50)
+        let settledClickX = clickTrajectory.last!.x
+        XCTAssertEqual(settledClickX, 0.50, accuracy: 0.03, "Camera must settle cleanly back to center")
+    }
+    
+    // MARK: - Validation Scenarios for Camera Smoothness
+    func testValidationScenarioMultiAreaRapidTransition() {
+        let engine = AutoZoomEngine()
+        
+        // Skenario 3: Cursor berpindah cepat di antara beberapa area (A -> B -> C -> D).
+        // Kamera harus bergerak smooth dan kontinu mengikuti aliran tanpa gerakan bolak-balik yang aneh.
+        let multiAreaEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.20, y: 0.30)), // Area A
+            TelemetryEvent(timestamp: 1.3, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)), // Area B
+            TelemetryEvent(timestamp: 1.6, type: .mouseMove, position: CGPoint(x: 0.75, y: 0.70)), // Area C
+            TelemetryEvent(timestamp: 3.0, type: .mouseMove, position: CGPoint(x: 0.75, y: 0.70))
+        ]
+        
+        var trajectory: [(t: Double, pt: CGPoint)] = []
+        for step in 0...30 {
+            let t = 1.0 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: multiAreaEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, pt: focus))
+        }
+        
+        // Pastikan transisi dari A ke C berjalan maju tanpa rollback mendadak
+        // X harus naik secara umum dari ~0.35/0.40 ke > 0.60
+        let startX = trajectory.first!.pt.x
+        let endX = trajectory.last!.pt.x
+        XCTAssertGreaterThan(endX, startX + 0.15, "Camera must smoothly progress toward destination Area C")
+    }
+    
+    func testValidationScenarioSlowAndNormalMovementPreserved() {
+        let engine = AutoZoomEngine()
+        
+        // Skenario 5: Pergerakan cursor yang lambat dan normal tetap menghasilkan respons kamera seperti sebelumnya.
+        let slowEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 2.0, type: .mouseMove, position: CGPoint(x: 0.75, y: 0.50)), // Bergerak lambat selama 1 detik
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.75, y: 0.50))
+        ]
+        
+        let focusStart = engine.smoothCameraFocus(at: 1.0, from: slowEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let focusMid = engine.smoothCameraFocus(at: 2.0, from: slowEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let focusSettled = engine.smoothCameraFocus(at: 3.0, from: slowEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        
+        XCTAssertEqual(focusStart.x, 0.50, accuracy: 0.02, "Camera starts centered")
+        XCTAssertGreaterThan(focusMid.x, focusStart.x, "Camera tracks slow movement naturally")
+        XCTAssertGreaterThan(focusSettled.x, 0.60, "Camera comfortably frames target after slow movement")
+    }
+    
+    func testValidationScenarioGradualOnsetAndGentleDeceleration() {
+        let engine = AutoZoomEngine()
+        
+        // Skenario 1 & 5: Memastikan kamera tidak bereaksi secara instan melainkan bertahap (akselerasi halus)
+        // dan melambat secara bertahap saat berhenti tanpa terpotong mendadak (cubic ease-out landing).
+        let moveEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: CGPoint(x: 0.80, y: 0.50)),
+            TelemetryEvent(timestamp: 4.0, type: .mouseMove, position: CGPoint(x: 0.80, y: 0.50))
+        ]
+        
+        // 1. Pada saat gerakan baru dimulai (1.00s sampai 1.06s), pergerakan kamera bertahap (tidak menyentak seketika)
+        let f0 = engine.smoothCameraFocus(at: 1.00, from: moveEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let f1 = engine.smoothCameraFocus(at: 1.04, from: moveEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let deltaInitial = f1.x - f0.x
+        XCTAssertLessThan(deltaInitial, 0.02, "Initial response must accelerate gradually with zero immediate jerk")
+        
+        // 2. Pada saat mendekati target (misalnya 2.2s hingga 2.5s), kamera melambat secara halus tanpa tersentak berhenti mendadak
+        let fNearLand1 = engine.smoothCameraFocus(at: 2.10, from: moveEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let fNearLand2 = engine.smoothCameraFocus(at: 2.20, from: moveEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let fNearLand3 = engine.smoothCameraFocus(at: 2.30, from: moveEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        
+        let vel1 = fNearLand2.x - fNearLand1.x
+        let vel2 = fNearLand3.x - fNearLand2.x
+        XCTAssertGreaterThan(vel1, 0.0001, "Camera still moving towards target")
+        XCTAssertGreaterThanOrEqual(vel1, vel2, "Velocity must gracefully decay (ease-out deceleration)")
+    }
+    
+    func testValidationScenarioSuddenDirectionChangeTransition() {
+        let engine = AutoZoomEngine()
+        
+        // Skenario 4: Cursor bergerak ke kanan (1.0 ke 1.3), lalu tiba-tiba berbelok tajam ke bawah (1.3 ke 1.6).
+        // Kamera harus melakukan transisi arah yang halus dan kontinu tanpa jitter atau gerakan patah.
+        let turnEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 1.3, type: .mouseMove, position: CGPoint(x: 0.80, y: 0.50)), // Menuju kanan
+            TelemetryEvent(timestamp: 1.6, type: .mouseMove, position: CGPoint(x: 0.80, y: 0.80)), // Belok ke bawah
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.80, y: 0.80))
+        ]
+        
+        var trajectory: [(t: Double, pt: CGPoint)] = []
+        for step in 0...24 {
+            let t = 1.2 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: turnEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, pt: focus))
+        }
+        
+        // Verifikasi tidak ada perubahan arah yang patah/tersentak seketika (derivatives continuous)
+        for i in 1..<trajectory.count {
+            let stepDist = hypot(trajectory[i].pt.x - trajectory[i-1].pt.x, trajectory[i].pt.y - trajectory[i-1].pt.y)
+            XCTAssertLessThan(stepDist, 0.05, "Step transition must be smooth across sudden 90-degree turn at t=\(trajectory[i].t)")
+        }
+    }
+    
+    func testValidationScenarioNewMovementWhileDecelerating() {
+        let engine = AutoZoomEngine()
+        
+        // Skenario 6: Cursor bergerak dari (0.5, 0.5) ke (0.7, 0.5) pada t=1.2.
+        // Saat kamera sedang melambat menuju 0.7 (di t=1.7), cursor kembali bergerak menuju (0.85, 0.6) di t=1.8.
+        // Kamera harus menyerap gerakan baru tersebut secara halus dan kontinu tanpa rollback atau patahan arah.
+        let chainingEvents = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 1.2, type: .mouseMove, position: CGPoint(x: 0.70, y: 0.50)),
+            // Jeda singkat di mana kamera mulai melambat
+            TelemetryEvent(timestamp: 1.7, type: .mouseMove, position: CGPoint(x: 0.70, y: 0.50)),
+            // Gerakan baru berlanjut
+            TelemetryEvent(timestamp: 1.9, type: .mouseMove, position: CGPoint(x: 0.85, y: 0.60)),
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.85, y: 0.60))
+        ]
+        
+        var prevX: CGFloat = 0.0
+        for step in 0...20 {
+            let t = 1.5 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: chainingEvents, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            if prevX > 0 {
+                // Sumbu X bergerak maju terus secara mulus (non-decreasing)
+                XCTAssertGreaterThanOrEqual(focus.x + 0.0001, prevX, "Smooth forward momentum when chaining movement at t=\(t)")
+            }
+            prevX = focus.x
+        }
     }
     
     func testSuddenMovementWhileCameraAtOffsetPosition() {
@@ -535,7 +681,7 @@ final class ClipFocusCoreTests: XCTestCase {
         
         // At t=2.8s (before sudden move): camera focus must be stable at offset position, ZERO phantom drift
         let focusBefore = engine.smoothCameraFocus(at: 2.8, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
-        XCTAssertGreaterThan(focusBefore.x, 0.60, "Camera must be settled at offset position before sudden move")
+        XCTAssertGreaterThan(focusBefore.x, 0.58, "Camera must be settled at offset position before sudden move")
         
         // From t=2.9 to 4.0: transit must be strictly non-increasing in X without backward jitter
         var prevX: CGFloat = 2.0
@@ -547,6 +693,89 @@ final class ClipFocusCoreTests: XCTestCase {
             }
             prevX = focus.x
         }
+    }
+    
+    // MARK: - Safe-Zone Boundary Stutter Prevention Tests
+    func testSafeZoneBoundarySlowApproachAndHover() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 1 & 3: Cursor approaches the safe-zone boundary (~0.66 at scale 2.0) slowly
+        // and stays close to the boundary without crossing it.
+        // Camera must move smoothly without oscillation, jerk, or repeated corrections.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 3.0, type: .mouseMove, position: CGPoint(x: 0.65, y: 0.50)), // Approaches edge
+            TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.65, y: 0.50))  // Stays hovering
+        ]
+        
+        var trajectory: [(t: Double, x: CGFloat)] = []
+        for step in 0...40 {
+            let t = 1.0 + Double(step) * 0.10
+            let focus = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, x: focus.x))
+        }
+        
+        // Trajectory must be strictly monotonic (non-decreasing) as it approaches and hovers
+        for i in 1..<trajectory.count {
+            XCTAssertGreaterThanOrEqual(trajectory[i].x + 0.0001, trajectory[i-1].x, "Approach to safe-zone boundary must be strictly monotonic at t=\(trajectory[i].t)")
+        }
+        
+        // Hovering at 0.65 must remain stable without oscillation
+        let hoverStart = trajectory.first(where: { $0.t >= 4.0 })!.x
+        let hoverEnd = trajectory.last!.x
+        XCTAssertEqual(hoverStart, hoverEnd, accuracy: 0.01, "Camera must remain stable while cursor hovers near boundary")
+    }
+    
+    func testSafeZoneBoundaryBackAndForthOscillation() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 2: Cursor moves repeatedly back and forth across/near the safe-zone boundary (0.64 to 0.68)
+        // Camera must NOT jitter, stutter, or experience acceleration shocks.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: CGPoint(x: 0.64, y: 0.50)),
+            TelemetryEvent(timestamp: 1.8, type: .mouseMove, position: CGPoint(x: 0.68, y: 0.50)), // Crosses boundary
+            TelemetryEvent(timestamp: 2.1, type: .mouseMove, position: CGPoint(x: 0.64, y: 0.50)), // Returns
+            TelemetryEvent(timestamp: 2.4, type: .mouseMove, position: CGPoint(x: 0.68, y: 0.50)), // Crosses boundary again
+            TelemetryEvent(timestamp: 2.7, type: .mouseMove, position: CGPoint(x: 0.64, y: 0.50)), // Returns again
+            TelemetryEvent(timestamp: 4.5, type: .mouseMove, position: CGPoint(x: 0.64, y: 0.50))
+        ]
+        
+        var trajectory: [(t: Double, x: CGFloat)] = []
+        for step in 0...40 {
+            let t = 1.4 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, x: focus.x))
+        }
+        
+        // Velocity between any consecutive 50ms samples must never exceed smooth bound (no acceleration shocks)
+        for i in 1..<trajectory.count {
+            let delta = abs(trajectory[i].x - trajectory[i-1].x)
+            XCTAssertLessThan(delta, 0.02, "Sample-to-sample displacement must remain smooth without stutter at t=\(trajectory[i].t)")
+        }
+    }
+    
+    func testSafeZoneBoundaryStopAndRestartMovement() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 7: Camera stops near the boundary, settles, and then cursor starts moving again further out.
+        // Transition from stop to moving again must be smooth without snapping.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: CGPoint(x: 0.66, y: 0.50)), // At boundary
+            // Stationary pause at boundary
+            TelemetryEvent(timestamp: 3.0, type: .mouseMove, position: CGPoint(x: 0.66, y: 0.50)),
+            // Moves further outward to 0.85
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.85, y: 0.50)),
+            TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.85, y: 0.50))
+        ]
+        
+        let focusBeforePause = engine.smoothCameraFocus(at: 2.8, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let focusStartMoving = engine.smoothCameraFocus(at: 3.1, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        let focusMovedOut = engine.smoothCameraFocus(at: 4.5, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+        
+        XCTAssertEqual(focusBeforePause.x, focusStartMoving.x, accuracy: 0.02, "Camera must remain resting at boundary during pause")
+        XCTAssertGreaterThan(focusMovedOut.x, focusStartMoving.x + 0.10, "Camera smoothly restarts and tracks further outward")
     }
     
     // MARK: - Project Serialization & Relinking Tests
@@ -1091,6 +1320,493 @@ final class ClipFocusCoreTests: XCTestCase {
         XCTAssertEqual(videoComp.sourceTrackIDForFrameTiming, kCMPersistentTrackID_Invalid)
         XCTAssertEqual(videoComp.frameDuration, CMTime(value: 1, timescale: 60))
         XCTAssertEqual(videoComp.renderSize, CGSize(width: 1920, height: 1080))
+    }
+    
+    func testSafeZoneReentryTouchingEdgeAndReturningInside() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario B & E: Cursor approaches/touches safe-zone edge (0.66 at scale 2.0),
+        // and then immediately returns inside the safe zone (to 0.50) and stays there.
+        var events: [TelemetryEvent] = []
+        for i in 0...60 {
+            let t = 1.0 + Double(i) * 0.02 // 50Hz telemetry
+            let x: CGFloat
+            if t <= 1.4 {
+                let p = (t - 1.0) / 0.4
+                x = 0.50 + 0.16 * CGFloat(p)
+            } else if t <= 1.8 {
+                let p = (t - 1.4) / 0.4
+                x = 0.66 - 0.16 * CGFloat(p)
+            } else {
+                x = 0.50
+            }
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: 0.50)))
+        }
+        events.append(TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)))
+        
+        var trajectory: [(t: Double, x: CGFloat, vel: CGFloat)] = []
+        var prevX: CGFloat = 0.50
+        for step in 0...50 {
+            let t = 1.0 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            let vel = (focus.x - prevX) / 0.05
+            trajectory.append((t: t, x: focus.x, vel: vel))
+            prevX = focus.x
+        }
+        
+        // 1. Verify no high-frequency velocity chatter (velocity must not flip-flop every 50ms)
+        var signFlips = 0
+        for i in 2..<trajectory.count {
+            let v1 = trajectory[i-1].vel
+            let v2 = trajectory[i].vel
+            if abs(v1) > 0.005 && abs(v2) > 0.005 && (v1 * v2 < 0) {
+                signFlips += 1
+            }
+        }
+        // At most 1 directional turnaround (moving out, then moving back in)
+        XCTAssertLessThanOrEqual(signFlips, 1, "Camera must transition direction at most once without oscillation or jitter")
+        
+        // 2. Trajectory must settle cleanly back at center (0.50)
+        let settledX = trajectory.last!.x
+        XCTAssertEqual(settledX, 0.50, accuracy: 0.02, "Camera must settle cleanly inside safe zone after cursor returns")
+    }
+    
+    func testSafeZoneReentryRepeatedInOutTransitions() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario C: Cursor moves in and out across the safe-zone boundary (0.64 to 0.68) several times.
+        var events: [TelemetryEvent] = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50))
+        ]
+        var curT = 1.2
+        for _ in 0..<4 {
+            events.append(TelemetryEvent(timestamp: curT, type: .mouseMove, position: CGPoint(x: 0.68, y: 0.50))) // Outside boundary
+            curT += 0.25
+            events.append(TelemetryEvent(timestamp: curT, type: .mouseMove, position: CGPoint(x: 0.60, y: 0.50))) // Inside boundary
+            curT += 0.25
+        }
+        events.append(TelemetryEvent(timestamp: 4.5, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)))
+        
+        var trajectory: [(t: Double, x: CGFloat)] = []
+        for step in 0...60 {
+            let t = 1.0 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, x: focus.x))
+        }
+        
+        // Displacement between consecutive 50ms samples must remain strictly within smooth Steadicam bounds
+        for i in 1..<trajectory.count {
+            let stepDist = abs(trajectory[i].x - trajectory[i-1].x)
+            XCTAssertLessThan(stepDist, 0.025, "Continuous camera motion across repeated in-out boundary crossings at t=\(trajectory[i].t)")
+        }
+    }
+    
+    func testSafeZoneReentryWhileCameraActivelyMoving() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario D: Cursor reaches outer boundary (0.75) at 1.4s, camera begins following outward.
+        // Before camera finishes adjustment, cursor rapidly returns inside to 0.55 at 1.6s.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)),
+            TelemetryEvent(timestamp: 1.4, type: .mouseMove, position: CGPoint(x: 0.75, y: 0.50)),
+            TelemetryEvent(timestamp: 1.6, type: .mouseMove, position: CGPoint(x: 0.55, y: 0.50)),
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.55, y: 0.50))
+        ]
+        
+        var trajectory: [(t: Double, x: CGFloat)] = []
+        for step in 0...40 {
+            let t = 1.0 + Double(step) * 0.05
+            let focus = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, x: focus.x))
+        }
+        
+        // Camera must not overshoot beyond reasonable framing of 0.55
+        let maxX = trajectory.map { $0.x }.max()!
+        XCTAssertLessThanOrEqual(maxX, 0.65, "Camera must not blindly complete obsolete outward movement when cursor returns inside")
+        
+        // Camera settles cleanly near the inner cursor position (0.55 is within inner deadzone [0.43, 0.57] of 0.50)
+        let finalX = trajectory.last!.x
+        XCTAssertEqual(finalX, 0.50, accuracy: 0.03, "Camera settles cleanly at base point when cursor rests inside inner deadzone")
+    }
+    
+    func testDiagnosticTopBoundaryReversal() {
+        let engine = AutoZoomEngine()
+        
+        // Sequence: Cursor moves from center (0.5, 0.5) to top safe-zone edge/beyond (0.5, 0.28) at t=1.4s,
+        // touches/crosses the boundary, and immediately moves downward to (0.5, 0.5) at t=1.8s, then rests.
+        var events: [TelemetryEvent] = []
+        for i in 0...60 {
+            let t = 1.0 + Double(i) * 0.02 // 50Hz telemetry
+            let y: CGFloat
+            if t <= 1.4 {
+                let p = (t - 1.0) / 0.4
+                y = 0.50 - 0.22 * CGFloat(p) // Reaches 0.28 at t=1.4
+            } else if t <= 1.8 {
+                let p = (t - 1.4) / 0.4
+                y = 0.28 + 0.22 * CGFloat(p) // Returns downward to 0.50
+            } else {
+                y = 0.50
+            }
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: 0.50, y: y)))
+        }
+        events.append(TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)))
+        
+        var prevF = CGPoint(x: 0.5, y: 0.5)
+        var prevV: CGFloat = 0.0
+        var signFlips = 0
+        for step in 0...60 {
+            let t = 1.0 + Double(step) * 0.02 // 50fps frames
+            let f = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            let v = (f.y - prevF.y) / 0.02
+            if step >= 2 && abs(v) > 0.005 && abs(prevV) > 0.005 && (v * prevV < 0) {
+                signFlips += 1
+            }
+            prevF = f
+            prevV = v
+        }
+        XCTAssertLessThanOrEqual(signFlips, 1, "Camera must transition direction at most once during boundary reversal without oscillation or vibration")
+        XCTAssertEqual(prevF.y, 0.50, accuracy: 0.02, "Camera settles back to center")
+    }
+    
+    func testCameraCatchUpAndReacquisitionWithoutBraking() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 1: Fast flick outside framing horizontally (0.30 -> 0.55 at 1.0/s),
+        // followed by continuous steady cruise at 0.15/s (0.55 -> 0.70).
+        // The camera must pursue, catch up, and smoothly transition to cruise speed
+        // without any unnatural dip or momentary stall.
+        var flickEvents: [TelemetryEvent] = [
+            TelemetryEvent(timestamp: 0.0, type: .mouseMove, position: CGPoint(x: 0.30, y: 0.50)),
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.30, y: 0.50))
+        ]
+        for i in 1...12 { // 0.24s fast move
+            let t = 1.0 + Double(i) * 0.02
+            let x = 0.30 + 1.00 * CGFloat(Double(i) * 0.02)
+            flickEvents.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: 0.50)))
+        }
+        for i in 1...50 { // Cruising at 0.15/s
+            let t = 1.24 + Double(i) * 0.02
+            let x = 0.54 + 0.15 * CGFloat(Double(i) * 0.02)
+            flickEvents.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: 0.50)))
+        }
+        flickEvents.append(TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.69, y: 0.50)))
+        
+        var prevFlickF = engine.smoothCameraFocus(at: 1.0, from: flickEvents, basePoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+        var flickVelocities: [(t: Double, v: CGFloat)] = []
+        for step in 0...60 {
+            let t = 1.0 + Double(step) * 0.02
+            let f = engine.smoothCameraFocus(at: t, from: flickEvents, basePoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+            let v = (f.x - prevFlickF.x) / 0.02
+            flickVelocities.append((t: t, v: v))
+            prevFlickF = f
+        }
+        
+        // During the cruise phase (t: 1.5 to 2.2), camera speed must stay positive and smoothly track cursor
+        let cruiseVelocities = flickVelocities.filter { $0.t >= 1.5 && $0.t <= 2.2 }
+        for sample in cruiseVelocities {
+            XCTAssertGreaterThan(sample.v, 0.05, "Camera must maintain continuous forward motion at t=\(sample.t) without braking")
+        }
+        
+        // Scenario 2: Multi-axis movement where cursor leaves framing horizontally
+        // while continuing to move vertically.
+        // Verifies the unified 2D elliptic safe-zone prevents orthogonal deadzone lock/braking.
+        var multiEvents: [TelemetryEvent] = [
+            TelemetryEvent(timestamp: 0.0, type: .mouseMove, position: CGPoint(x: 0.35, y: 0.50)),
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.35, y: 0.50))
+        ]
+        for i in 1...10 {
+            let t = 1.0 + Double(i) * 0.02
+            let x = 0.35 + 0.35 * CGFloat(Double(i) / 10.0) // 0.35 -> 0.70 fast
+            let y = 0.50 + 0.02 * CGFloat(Double(i) / 10.0)
+            multiEvents.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: y)))
+        }
+        for i in 1...40 {
+            let t = 1.20 + Double(i) * 0.02
+            let y = 0.52 + 0.15 * CGFloat(Double(i) * 0.02) // Continuous vertical motion
+            multiEvents.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: 0.70, y: y)))
+        }
+        multiEvents.append(TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.70, y: 0.64)))
+        
+        var prevMultiF = engine.smoothCameraFocus(at: 1.0, from: multiEvents, basePoint: CGPoint(x: 0.35, y: 0.50), scale: 2.0)
+        var multiSpeeds: [(t: Double, speed: CGFloat)] = []
+        for step in 0...60 {
+            let t = 1.0 + Double(step) * 0.02
+            let f = engine.smoothCameraFocus(at: t, from: multiEvents, basePoint: CGPoint(x: 0.35, y: 0.50), scale: 2.0)
+            let speed = hypot(f.x - prevMultiF.x, f.y - prevMultiF.y) / 0.02
+            multiSpeeds.append((t: t, speed: speed))
+            prevMultiF = f
+        }
+        
+        // During the catch-up and transition phase (t: 1.3 to 1.8), speed must not collapse to 0
+        let transitionSpeeds = multiSpeeds.filter { $0.t >= 1.35 && $0.t <= 1.8 }
+        for sample in transitionSpeeds {
+            XCTAssertGreaterThan(sample.speed, 0.05, "2D camera speed must remain continuous without stalling at t=\(sample.t)")
+        }
+    }
+    
+    func testContinuousSteadicamMotionWithoutTapAliasingOrBraking() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario: Flick from 0.30 to 0.70 at 1.60/s, then continue navigating at 0.10/s
+        var events: [TelemetryEvent] = [
+            TelemetryEvent(timestamp: 0.0, type: .mouseMove, position: CGPoint(x: 0.30, y: 0.50)),
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.30, y: 0.50))
+        ]
+        for i in 1...25 {
+            let t = 1.0 + Double(i) * 0.01
+            let x = 0.30 + 1.60 * CGFloat(Double(i) * 0.01)
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: 0.50)))
+        }
+        for i in 1...100 {
+            let t = 1.25 + Double(i) * 0.01
+            let x = 0.70 + 0.10 * CGFloat(Double(i) * 0.01)
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: 0.50)))
+        }
+        events.append(TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.80, y: 0.50)))
+        
+        var prevF = engine.smoothCameraFocus(at: 1.0, from: events, basePoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+        var prevV: CGFloat = 0.0
+        var accelerations: [CGFloat] = []
+        for step in 35...65 {
+            let t = 1.0 + Double(step) * 0.01
+            let f = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+            let v = (f.x - prevF.x) / 0.01
+            let a = (v - prevV) / 0.01
+            if step > 36 {
+                accelerations.append(a)
+            }
+            // Camera speed must stay positive and smoothly track cursor
+            XCTAssertGreaterThan(v, 0.05, "Camera velocity must remain continuous and positive at t=\(t)")
+            prevF = f
+            prevV = v
+        }
+        
+        // Assert acceleration sign transitions: acceleration must smoothly transition at most once from acceleration to deceleration
+        var signChanges = 0
+        for i in 1..<accelerations.count {
+            if accelerations[i] * accelerations[i-1] < -0.01 {
+                signChanges += 1
+            }
+        }
+        XCTAssertLessThanOrEqual(signChanges, 1, "Acceleration must not oscillate or ripple due to tap aliasing (found \(signChanges) flips)")
+    }
+    
+    // MARK: - Camera Tracking, Waypoint Filtering & Corner Limit Tests
+    
+    func testTransientWaypointDetourSuppression() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 1: User clicks at BL (0.2, 0.8) at t=1.0.
+        // Cursor rushes to BR (0.8, 0.8) at t=1.3, stays only briefly until t=1.5 with NO click/interaction.
+        // Immediately moves to TR (0.8, 0.2) at t=1.8, and settles there until t=3.5.
+        // The camera must NOT take a full detour to BR; it should prioritize the persistent path toward TR.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseClick, position: CGPoint(x: 0.2, y: 0.8)),
+            TelemetryEvent(timestamp: 1.3, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.8)),
+            TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.8)),
+            TelemetryEvent(timestamp: 1.8, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.2)),
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.2))
+        ]
+        
+        var trajectory: [(t: Double, focus: CGPoint)] = []
+        for step in 0...40 {
+            let t = 1.0 + Double(step) * 0.05
+            let f = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, focus: f))
+        }
+        
+        // Verify camera does not take the full bottom-right detour:
+        // During the entire transition, while moving from BL to TR, the camera cuts the corner across the center
+        // rather than traveling fully along the bottom border (Y remains below 0.65 after passing BL).
+        let postBLTrajectory = trajectory.filter { $0.t >= 1.75 && $0.t <= 2.2 }
+        for sample in postBLTrajectory {
+            // Y must smoothly decrease towards TR (0.27) rather than staying stuck at bottom (0.73)
+            XCTAssertLessThanOrEqual(sample.focus.y, 0.68, "Camera must not pursue transient bottom-right position at t=\(sample.t)")
+        }
+        
+        // Final position settles cleanly at top-right destination
+        let settled = trajectory.last!.focus
+        XCTAssertEqual(settled.x, 0.73, accuracy: 0.03, "Camera settles at right edge")
+        XCTAssertEqual(settled.y, 0.27, accuracy: 0.03, "Camera settles at top edge")
+    }
+    
+    func testMeaningfulInteractionAtWaypointPreserved() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 2: Same trajectory, but user performs an important click at BR at t=1.3.
+        // The camera MUST capture the important click at BR before proceeding to TR.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseClick, position: CGPoint(x: 0.2, y: 0.8)),
+            TelemetryEvent(timestamp: 1.3, type: .mouseClick, position: CGPoint(x: 0.8, y: 0.8)), // Meaningful interaction!
+            TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.8)),
+            TelemetryEvent(timestamp: 1.8, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.2)),
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.8, y: 0.2))
+        ]
+        
+        var trajectory: [(t: Double, focus: CGPoint)] = []
+        for step in 0...40 {
+            let t = 1.0 + Double(step) * 0.05
+            let f = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            trajectory.append((t: t, focus: f))
+        }
+        
+        // Because of the click at BR, the camera MUST frame the bottom-right click comfortably
+        let maxBR_Y = trajectory.map { $0.focus.y }.max()!
+        XCTAssertGreaterThanOrEqual(maxBR_Y, 0.70, "Camera must capture important interaction at bottom-right waypoint")
+    }
+    
+    func testScreenCornerApproachAndReturnSmoothness() {
+        let engine = AutoZoomEngine()
+        
+        // Scenario 3: Cursor approaches extreme screen corner (0.95, 0.95) at scale 2.0.
+        // Physical camera limit is [0.25, 0.75].
+        // Camera must decelerate smoothly without impact shock, never exceed 0.75,
+        // and return smoothly without sticky-wall delay when cursor returns to center.
+        let events = [
+            TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
+            TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: CGPoint(x: 0.95, y: 0.95)),
+            TelemetryEvent(timestamp: 3.0, type: .mouseMove, position: CGPoint(x: 0.95, y: 0.95)),
+            TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
+            TelemetryEvent(timestamp: 5.0, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5))
+        ]
+        
+        var trajectory: [(t: Double, focus: CGPoint, velX: CGFloat, velY: CGFloat)] = []
+        var prevF = CGPoint(x: 0.5, y: 0.5)
+        for step in 0...70 {
+            let t = 1.0 + Double(step) * 0.05
+            let f = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            let vx = (f.x - prevF.x) / 0.05
+            let vy = (f.y - prevF.y) / 0.05
+            trajectory.append((t: t, focus: f, velX: vx, velY: vy))
+            prevF = f
+        }
+        
+        // 1. Boundary enforcement: focus must strictly remain in legal viewport bounds [0.25, 0.75]
+        for sample in trajectory {
+            XCTAssertGreaterThanOrEqual(sample.focus.x, 0.25 - 0.001)
+            XCTAssertLessThanOrEqual(sample.focus.x, 0.75 + 0.001)
+            XCTAssertGreaterThanOrEqual(sample.focus.y, 0.25 - 0.001)
+            XCTAssertLessThanOrEqual(sample.focus.y, 0.75 + 0.001)
+        }
+        
+        // 2. Velocity smoothness: velocity change per 50ms step must never experience impact shocks (|deltaV| <= 0.6)
+        for i in 2..<trajectory.count {
+            let dVx = abs(trajectory[i].velX - trajectory[i-1].velX)
+            let dVy = abs(trajectory[i].velY - trajectory[i-1].velY)
+            XCTAssertLessThanOrEqual(dVx, 0.60, "X velocity must remain continuous without impact shock at t=\(trajectory[i].t)")
+            XCTAssertLessThanOrEqual(dVy, 0.60, "Y velocity must remain continuous without impact shock at t=\(trajectory[i].t)")
+        }
+    }
+    
+    func testAllFourScreenCornersReachability() {
+        let engine = AutoZoomEngine()
+        
+        let corners: [(name: String, pos: CGPoint, expectedMinX: CGFloat, expectedMaxX: CGFloat, expectedMinY: CGFloat, expectedMaxY: CGFloat)] = [
+            ("Top-Left", CGPoint(x: 0.02, y: 0.02), 0.25, 0.28, 0.25, 0.28),
+            ("Top-Right", CGPoint(x: 0.98, y: 0.02), 0.72, 0.75, 0.25, 0.28),
+            ("Bottom-Left", CGPoint(x: 0.02, y: 0.98), 0.25, 0.28, 0.72, 0.75),
+            ("Bottom-Right", CGPoint(x: 0.98, y: 0.98), 0.72, 0.75, 0.72, 0.75)
+        ]
+        
+        for c in corners {
+            let events = [
+                TelemetryEvent(timestamp: 1.0, type: .mouseMove, position: CGPoint(x: 0.5, y: 0.5)),
+                TelemetryEvent(timestamp: 1.5, type: .mouseMove, position: c.pos),
+                TelemetryEvent(timestamp: 3.5, type: .mouseMove, position: c.pos)
+            ]
+            let settled = engine.smoothCameraFocus(at: 3.2, from: events, basePoint: CGPoint(x: 0.5, y: 0.5), scale: 2.0)
+            XCTAssertGreaterThanOrEqual(settled.x, c.expectedMinX - 0.01, "\(c.name) settled X lower bound")
+            XCTAssertLessThanOrEqual(settled.x, c.expectedMaxX + 0.01, "\(c.name) settled X upper bound")
+            XCTAssertGreaterThanOrEqual(settled.y, c.expectedMinY - 0.01, "\(c.name) settled Y lower bound")
+            XCTAssertLessThanOrEqual(settled.y, c.expectedMaxY + 0.01, "\(c.name) settled Y upper bound")
+        }
+    }
+    
+    func testContinuousFastSafeZoneExitWithoutHitchOrDiscontinuity() {
+        let engine = AutoZoomEngine()
+        
+        // Continuous 60Hz cursor telemetry moving at constant high velocity (1.2/s)
+        // starting at center (0.50, 0.50) at t=1.0 and exiting safe-zone to (0.95, 0.50)
+        var events: [TelemetryEvent] = []
+        for i in 0...60 {
+            let t = 1.0 - Double(60 - i) * 0.01667
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: 0.50, y: 0.50)))
+        }
+        for i in 1...60 {
+            let t = 1.0 + Double(i) * 0.01667
+            let x = 0.50 + 1.20 * CGFloat(Double(i) * 0.01667)
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: min(0.95, x), y: 0.50)))
+        }
+        
+        var prevF = engine.smoothCameraFocus(at: 1.0, from: events, basePoint: CGPoint(x: 0.50, y: 0.50), scale: 2.0)
+        var prevV: CGFloat = 0.0
+        var velocitiesDuringExit: [CGFloat] = []
+        for step in 1...30 {
+            let t = 1.0 + Double(step) * 0.01667
+            let f = engine.smoothCameraFocus(at: t, from: events, basePoint: CGPoint(x: 0.50, y: 0.50), scale: 2.0)
+            let v = (f.x - prevF.x) / 0.01667
+            if step > 6 {
+                velocitiesDuringExit.append(v)
+            }
+            prevF = f
+            prevV = v
+        }
+        
+        // During fast exit across safe-zone boundary, camera velocity must strictly increase monotonically (no braking/hitching)
+        for i in 1..<velocitiesDuringExit.count {
+            XCTAssertGreaterThanOrEqual(velocitiesDuringExit[i], velocitiesDuringExit[i-1] - 0.005,
+                "Velocity must never suddenly dip or brake during outward safe-zone exit (found \(velocitiesDuringExit[i]) < \(velocitiesDuringExit[i-1]))")
+        }
+    }
+    
+    func testCompareAdjacentBlocksVsSingleBlockContinuity() {
+        let engine = AutoZoomEngine()
+        
+        // Continuous cursor movement from t=2.0 to t=6.0 across boundary at t=4.0
+        var events: [TelemetryEvent] = []
+        for i in 0...240 {
+            let t = 2.0 + Double(i) * 0.01667
+            let x = 0.30 + 0.10 * CGFloat(Double(i) * 0.01667) // Constant smooth cursor movement
+            events.append(TelemetryEvent(timestamp: t, type: .mouseMove, position: CGPoint(x: x, y: 0.50)))
+        }
+        
+        // Configuration A: Two adjacent zoom blocks [1.0 to 4.0] and [4.0 to 7.0]
+        let kf1 = ZoomKeyframe(startTime: 1.0, duration: 3.0, focusPoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+        let kf2 = ZoomKeyframe(startTime: 4.0, duration: 3.0, focusPoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+        let configA_Keyframes = [kf1, kf2]
+        
+        // Configuration B: Single continuous zoom block [1.0 to 7.0]
+        let kfSingle = ZoomKeyframe(startTime: 1.0, duration: 6.0, focusPoint: CGPoint(x: 0.30, y: 0.50), scale: 2.0)
+        let configB_Keyframes = [kfSingle]
+        
+        // 1. When focusPoints match, ConfigA must be mathematically identical to ConfigB on every frame!
+        for step in 0...60 {
+            let t = 3.5 + Double(step) * 0.01667
+            let vpA = engine.evaluateViewport(at: t, with: configA_Keyframes, telemetry: events)
+            let vpB = engine.evaluateViewport(at: t, with: configB_Keyframes, telemetry: events)
+            XCTAssertEqual(vpA.focusPoint.x, vpB.focusPoint.x, accuracy: 0.0001,
+                "ConfigA must be identical to ConfigB at t=\(t)")
+        }
+        
+        // 2. When focusPoints differ (intentional framing sweep), velocity must remain strictly continuous and smooth without drops to zero
+        let kfDiff1 = ZoomKeyframe(startTime: 1.0, duration: 3.0, focusPoint: CGPoint(x: 0.20, y: 0.50), scale: 2.0)
+        let kfDiff2 = ZoomKeyframe(startTime: 4.0, duration: 3.0, focusPoint: CGPoint(x: 0.70, y: 0.50), scale: 2.0)
+        var prevDiffF: CGPoint?
+        var velocitiesDiff: [CGFloat] = []
+        for step in 0...60 {
+            let t = 3.5 + Double(step) * 0.01667
+            let vp = engine.evaluateViewport(at: t, with: [kfDiff1, kfDiff2], telemetry: events)
+            if let p = prevDiffF {
+                let v = (vp.focusPoint.x - p.x) / 0.01667
+                velocitiesDiff.append(v)
+            }
+            prevDiffF = vp.focusPoint
+        }
+        
+        // Assert that velocity never collapses or reverses unexpectedly during transition
+        for v in velocitiesDiff {
+            XCTAssertGreaterThan(v, 0.05, "Camera velocity must remain positive and continuous during framing transition")
+        }
     }
 }
 

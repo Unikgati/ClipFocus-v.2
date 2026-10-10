@@ -299,6 +299,136 @@ public final class AutoZoomEngine: @unchecked Sendable {
         return CGPoint(x: x, y: y)
     }
     
+    /// Check whether any meaningful interaction (click, drag, key typing) occurred in temporal and spatial proximity
+    private func hasInteraction(near position: CGPoint, at time: TimeInterval, in events: [TelemetryEvent]) -> Bool {
+        let window: TimeInterval = 0.35
+        let radius: CGFloat = 0.25
+        let minTime = time - window
+        let maxTime = time + window
+        
+        if events.count <= 16 {
+            return events.contains { ev in
+                guard ev.timestamp >= minTime && ev.timestamp <= maxTime else { return false }
+                switch ev.type {
+                case .mouseClick, .mouseDrag, .keyDown:
+                    if let p = ev.position {
+                        return hypot(p.x - position.x, p.y - position.y) <= radius
+                    }
+                    return true
+                default:
+                    return false
+                }
+            }
+        }
+        
+        var low = 0
+        var high = events.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            if events[mid].timestamp < minTime {
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        
+        var idx = max(0, high)
+        while idx < events.count && events[idx].timestamp <= maxTime {
+            let ev = events[idx]
+            if ev.timestamp >= minTime {
+                switch ev.type {
+                case .mouseClick, .mouseDrag, .keyDown:
+                    if let p = ev.position {
+                        if hypot(p.x - position.x, p.y - position.y) <= radius {
+                            return true
+                        }
+                    } else {
+                        return true
+                    }
+                default:
+                    break
+                }
+            }
+            idx += 1
+        }
+        return false
+    }
+    
+    /// Retrieve stabilized cursor position suppressing insignificant transient movements (flicks/reversals/waypoint detours with no interaction)
+    public func stabilizedCursorPosition(at time: TimeInterval, from events: [TelemetryEvent], fallback: CGPoint) -> CGPoint {
+        guard !events.isEmpty else { return fallback }
+        
+        let curPos = cursorPosition(at: time, from: events, fallback: fallback)
+        
+        // Preserve important interactions (click, drag, typing) within proximity
+        if hasInteraction(near: curPos, at: time, in: events) {
+            return curPos
+        }
+        
+        // Continuous projection-based analysis over horizon tau = 0.30s
+        let tau: Double = 0.30
+        let tPast = max(0.0, time - tau)
+        let tFuture = time + tau
+        let pPast = cursorPosition(at: tPast, from: events, fallback: fallback)
+        let pFuture = cursorPosition(at: tFuture, from: events, fallback: fallback)
+        
+        // Segment projection: find closest point on segment [pPast, pFuture]
+        let vx = pFuture.x - pPast.x
+        let vy = pFuture.y - pPast.y
+        let lenSq = vx * vx + vy * vy
+        
+        let projX: CGFloat
+        let projY: CGFloat
+        if lenSq < 0.0001 {
+            projX = pPast.x
+            projY = pPast.y
+        } else {
+            let wx = curPos.x - pPast.x
+            let wy = curPos.y - pPast.y
+            let param = max(0.0, min(1.0, (wx * vx + wy * vy) / lenSq))
+            projX = pPast.x + param * vx
+            projY = pPast.y + param * vy
+        }
+        
+        let excX = curPos.x - projX
+        let excY = curPos.y - projY
+        let excDist = hypot(excX, excY)
+        guard excDist > 0.02 else { return curPos }
+        
+        // Prevent directional fighting: if pulling towards projection would pull backwards
+        // against the cursor's forward movement towards its future destination, do not fight!
+        let toFutX = pFuture.x - curPos.x
+        let toFutY = pFuture.y - curPos.y
+        let toBaseX = projX - curPos.x
+        let toBaseY = projY - curPos.y
+        let alignment = toBaseX * toFutX + toBaseY * toFutY
+        guard alignment > 0.0 else { return curPos }
+        
+        let futDist = hypot(toFutX, toFutY)
+        let denom = max(0.0001, excDist * futDist)
+        let alignRatio = max(0.0, min(1.0, Double(alignment / denom)))
+        let alignAlpha = alignRatio * alignRatio * (3.0 - 2.0 * alignRatio)
+        
+        // Smooth C^2 continuous transition factors with zero step-discontinuities
+        let dPast = hypot(curPos.x - pPast.x, curPos.y - pPast.y)
+        let dFuture = hypot(curPos.x - pFuture.x, curPos.y - pFuture.y)
+        let minTravel = min(dPast, dFuture)
+        
+        let excNorm = Double(max(0.0, min(1.0, (excDist - 0.02) / 0.08)))
+        let excAlpha = excNorm * excNorm * (3.0 - 2.0 * excNorm)
+        
+        let travelNorm = Double(max(0.0, min(1.0, (minTravel - 0.02) / 0.06)))
+        let travelAlpha = travelNorm * travelNorm * (3.0 - 2.0 * travelNorm)
+        
+        let alpha = CGFloat(excAlpha * travelAlpha * alignAlpha)
+        guard alpha > 0.001 else { return curPos }
+        
+        return CGPoint(
+            x: curPos.x + toBaseX * alpha,
+            y: curPos.y + toBaseY * alpha
+        )
+    }
+    
     /// Professional Viewport Camera Steadicam Framing (Screen Studio / FocuSee style)
     /// 
     /// 1. Inner Tripod Deadzone (~28% of viewport): Camera is 100% stationary and locked on small hand twitches.
@@ -315,78 +445,156 @@ public final class AutoZoomEngine: @unchecked Sendable {
         let innerDeadzoneX = halfSpanX * 0.28
         let innerDeadzoneY = halfSpanY * 0.28
         
-        // Outer safe boundary: ensure cursor NEVER gets close to the screen edge
-        let outerSpanX = halfSpanX * 0.65
-        let outerSpanY = halfSpanY * 0.65
+
+        
+        // Smooth C^2 boundary limiting ensuring camera target smoothly decelerates before reaching physical viewport limits
+        let smoothStageBound: (CGFloat, CGFloat, CGFloat) -> CGFloat = { val, minVal, maxVal in
+            if maxVal <= minVal { return (minVal + maxVal) * 0.5 }
+            let margin: CGFloat = min(0.04, (maxVal - minVal) * 0.20)
+            if val > maxVal - margin {
+                let excess = val - (maxVal - margin)
+                let span = margin * 2.0
+                let t = min(1.0, max(0.0, excess / span))
+                let eased = t * (2.0 - t)
+                return min(maxVal, (maxVal - margin) + margin * eased)
+            } else if val < minVal + margin {
+                let deficit = (minVal + margin) - val
+                let span = margin * 2.0
+                let t = min(1.0, max(0.0, deficit / span))
+                let eased = t * (2.0 - t)
+                return max(minVal, (minVal + margin) - margin * eased)
+            }
+            return val
+        }
         
         let computePushTarget: (CGPoint) -> CGPoint = { pos in
             let dx = pos.x - basePoint.x
             let dy = pos.y - basePoint.y
-            let absDx = abs(dx)
-            let absDy = abs(dy)
             
-            var shiftX: CGFloat = 0.0
-            if absDx > innerDeadzoneX {
-                let excess = absDx - innerDeadzoneX
-                let span = max(0.001, outerSpanX - innerDeadzoneX)
-                let t = min(1.0, excess / span)
-                // Smoothstep (3t^2 - 2t^3): 0 at t=0 with 0 slope, 1 at t=1 with 0 slope
-                // Guarantees pure C^2 continuous acceleration across safe-zone boundaries (zero jitter/kicks)
-                let factor = CGFloat(t * t * (3.0 - 2.0 * Double(t)))
-                shiftX = (dx > 0 ? 1.0 : -1.0) * (excess * factor)
+            // Unified 2D Elliptic Safe-Zone:
+            // Eliminates decoupled-axis deadzone braking where secondary axis movement was frozen
+            // while primary axis settled, causing the camera to hit an invisible brake during multi-axis catch-up.
+            let normInX = dx / innerDeadzoneX
+            let normInY = dy / innerDeadzoneY
+            let rIn = hypot(normInX, normInY)
+            
+            let shiftX: CGFloat
+            let shiftY: CGFloat
+            
+            if rIn <= 1.0 {
+                // Inside inner safe zone: 100% stationary tripod lock
+                shiftX = 0.0
+                shiftY = 0.0
+            } else {
+                let ratioR: CGFloat = 0.65 / 0.28 // outerSpan / innerDeadzone
+                let spanR = ratioR - 1.0
+                let t = (rIn - 1.0) / spanR
+                let radialShift: CGFloat
+                if t >= 1.0 {
+                    // Beyond outer safe boundary: strictly seamless 1:1 follow (derivative = 1.0, second derivative = 0.0)
+                    radialShift = spanR * (t - 0.5)
+                } else {
+                    // Monotonic C^2 Quintic Smoothstep Integral:
+                    // s'(t) = 6t^5 - 15t^4 + 10t^3 (strictly monotonic from 0.0 to 1.0, zero overshoot!)
+                    // s''(t) = 30t^2 * (1 - t)^2 >= 0 everywhere on [0, 1]!
+                    // Guarantees strictly non-negative acceleration during outward cursor tracking:
+                    // 1. Zero initial velocity & zero acceleration jerk at inner deadzone (t=0): s(0)=0, s'(0)=0, s''(0)=0
+                    // 2. Continuous, unbroken acceleration profile (t=0..1): s'(t) glides smoothly 0.0 -> 1.0 without surging to 1.51x and braking
+                    // 3. Perfect C^2 smooth arrival at 1:1 linear follow (t=1): s(1)=0.5, s'(1)=1.0, s''(1)=0.0 with zero derivative jump or hitch
+                    let s = t * t * t * t * (t * t - 3.0 * t + 2.5)
+                    radialShift = spanR * s
+                }
+                let followFactor = radialShift / rIn
+                shiftX = dx * followFactor
+                shiftY = dy * followFactor
             }
             
-            var shiftY: CGFloat = 0.0
-            if absDy > innerDeadzoneY {
-                let excess = absDy - innerDeadzoneY
-                let span = max(0.001, outerSpanY - innerDeadzoneY)
-                let t = min(1.0, excess / span)
-                let factor = CGFloat(t * t * (3.0 - 2.0 * Double(t)))
-                shiftY = (dy > 0 ? 1.0 : -1.0) * (excess * factor)
-            }
-            
-            // Return unconstrained continuous position for convolution filter
-            // (Clamping is applied to final convolved result to prevent discrete sample-tap popping)
-            return CGPoint(x: basePoint.x + shiftX, y: basePoint.y + shiftY)
+            let targetX = smoothStageBound(basePoint.x + shiftX, halfSpanX, 1.0 - halfSpanX)
+            let targetY = smoothStageBound(basePoint.y + shiftY, halfSpanY, 1.0 - halfSpanY)
+            return CGPoint(x: targetX, y: targetY)
         }
         
-        // Ultra-Smooth Causal Cinema Inertia Kernel (~280ms effective delay, ~0.64s past horizon)
-        // Strictly uniform 50Hz grid (dt = 0.02s) eliminates discrete tap-aliasing ripple/jitter
-        // Strictly Causal (dt <= 0.0): Zero future lookahead leaks. Camera never twitches in anticipation of sudden moves.
+        // Ultra-Smooth Cinematic Steadicam Inertia Kernel (~288ms effective delay, ~0.72s past horizon)
+        // High-Precision 100Hz Grid (dt = 0.01s) with C^2 smooth polynomial onset and cubic ease-out deceleration
+        // Eliminates 50Hz discrete tap-aliasing ripple, jitter, and stutter on 60Hz/120Hz ProMotion displays
+        // w(u) = u^2 * (1 - u)^3 guarantees:
+        // 1. Zero initial velocity & zero initial acceleration (h(0) = 0, h'(0) = 0): gradual, non-instant reaction
+        // 2. Continuous momentum & gradual direction transition without sudden jerks or zigzags
+        // 3. Velvety cubic ease-out landing (h(-T) = 0, h'(-T) = 0): gradual deceleration to rest with zero abrupt stop
         let sampleOffsets: [(dt: Double, weight: Double)] = [
-            ( 0.00, 0.006126),
-            (-0.02, 0.008433),
-            (-0.04, 0.011336),
-            (-0.06, 0.014882),
-            (-0.08, 0.019080),
-            (-0.10, 0.023891),
-            (-0.12, 0.029216),
-            (-0.14, 0.034890),
-            (-0.16, 0.040693),
-            (-0.18, 0.046351),
-            (-0.20, 0.051560),
-            (-0.22, 0.056013),
-            (-0.24, 0.059428),
-            (-0.26, 0.061575),
-            (-0.28, 0.062308),
-            (-0.30, 0.061575),
-            (-0.32, 0.059428),
-            (-0.34, 0.056013),
-            (-0.36, 0.051560),
-            (-0.38, 0.046351),
-            (-0.40, 0.040693),
-            (-0.42, 0.034890),
-            (-0.44, 0.029216),
-            (-0.46, 0.023891),
-            (-0.48, 0.019080),
-            (-0.50, 0.014882),
-            (-0.52, 0.011336),
-            (-0.54, 0.008433),
-            (-0.56, 0.006126),
-            (-0.58, 0.004347),
-            (-0.60, 0.003012),
-            (-0.62, 0.002038),
-            (-0.64, 0.001347),
+            (-0.00, 0.000000),
+            (-0.01, 0.000154),
+            (-0.02, 0.000591),
+            (-0.03, 0.001273),
+            (-0.04, 0.002167),
+            (-0.05, 0.003238),
+            (-0.06, 0.004457),
+            (-0.07, 0.005796),
+            (-0.08, 0.007226),
+            (-0.09, 0.008723),
+            (-0.10, 0.010264),
+            (-0.11, 0.011829),
+            (-0.12, 0.013396),
+            (-0.13, 0.014949),
+            (-0.14, 0.016470),
+            (-0.15, 0.017946),
+            (-0.16, 0.019362),
+            (-0.17, 0.020708),
+            (-0.18, 0.021973),
+            (-0.19, 0.023147),
+            (-0.20, 0.024223),
+            (-0.21, 0.025194),
+            (-0.22, 0.026056),
+            (-0.23, 0.026804),
+            (-0.24, 0.027435),
+            (-0.25, 0.027947),
+            (-0.26, 0.028338),
+            (-0.27, 0.028610),
+            (-0.28, 0.028763),
+            (-0.29, 0.028798),
+            (-0.30, 0.028718),
+            (-0.31, 0.028525),
+            (-0.32, 0.028225),
+            (-0.33, 0.027821),
+            (-0.34, 0.027319),
+            (-0.35, 0.026724),
+            (-0.36, 0.026042),
+            (-0.37, 0.025279),
+            (-0.38, 0.024443),
+            (-0.39, 0.023541),
+            (-0.40, 0.022580),
+            (-0.41, 0.021568),
+            (-0.42, 0.020513),
+            (-0.43, 0.019422),
+            (-0.44, 0.018304),
+            (-0.45, 0.017166),
+            (-0.46, 0.016017),
+            (-0.47, 0.014865),
+            (-0.48, 0.013717),
+            (-0.49, 0.012581),
+            (-0.50, 0.011465),
+            (-0.51, 0.010374),
+            (-0.52, 0.009317),
+            (-0.53, 0.008298),
+            (-0.54, 0.007324),
+            (-0.55, 0.006401),
+            (-0.56, 0.005532),
+            (-0.57, 0.004723),
+            (-0.58, 0.003976),
+            (-0.59, 0.003294),
+            (-0.60, 0.002679),
+            (-0.61, 0.002133),
+            (-0.62, 0.001656),
+            (-0.63, 0.001246),
+            (-0.64, 0.000903),
+            (-0.65, 0.000624),
+            (-0.66, 0.000405),
+            (-0.67, 0.000242),
+            (-0.68, 0.000127),
+            (-0.69, 0.000055),
+            (-0.70, 0.000017),
+            (-0.71, 0.000002),
+            (-0.72, 0.000000),
         ]
         
         var totalWeight: CGFloat = 0.0
@@ -395,12 +603,9 @@ public final class AutoZoomEngine: @unchecked Sendable {
         
         for sample in sampleOffsets {
             let sampleTime = time + sample.dt
-            // Discard taps that fall before the start of the recording (t < 0).
-            // Clamping them with max(0, time + dt) artificially bunched up >60% of kernel weight at t=0,
-            // which caused an acceleration shudder/stutter when the first zoom occurred near the beginning of the video.
             guard sampleTime >= 0 else { continue }
             
-            let sPos = cursorPosition(at: sampleTime, from: events, fallback: basePoint)
+            let sPos = stabilizedCursorPosition(at: sampleTime, from: events, fallback: basePoint)
             let target = computePushTarget(sPos)
             let w = CGFloat(sample.weight)
             sumX += target.x * w
@@ -417,7 +622,7 @@ public final class AutoZoomEngine: @unchecked Sendable {
             )
         }
         
-        let curPos = cursorPosition(at: time, from: events, fallback: basePoint)
+        let curPos = stabilizedCursorPosition(at: time, from: events, fallback: basePoint)
         let fallbackTarget = computePushTarget(curPos)
         return CGPoint(
             x: max(halfSpanX, min(1.0 - halfSpanX, fallbackTarget.x)),
@@ -588,27 +793,30 @@ public final class AutoZoomEngine: @unchecked Sendable {
             if let next = nextKF, time >= effectiveMorphStart && time <= effectiveMorphEnd {
                 let progress = (time - effectiveMorphStart) / max(0.001, effectiveMorphEnd - effectiveMorphStart)
                 let eased = easyEaseInOut(progress)
-                
-                let startFocus = smoothCameraFocus(at: effectiveMorphStart + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: kf.scale)
-                let endFocus = smoothCameraFocus(at: effectiveMorphEnd + timeOffset, from: validEvents, basePoint: next.focusPoint, scale: next.scale)
-                
                 let currentScale = kf.scale + (next.scale - kf.scale) * CGFloat(eased)
+                
+                // Continuous Dynamic Radar Tracking Across Block Boundaries:
+                // Evaluates live Steadicam cursor focus at current timestamp (time + timeOffset) for both blocks,
+                // smoothly blending the base-point framing without ever freezing velocity or interrupting tracking!
+                let focusA = smoothCameraFocus(at: time + timeOffset, from: validEvents, basePoint: kf.focusPoint, scale: currentScale)
+                let focusB = smoothCameraFocus(at: time + timeOffset, from: validEvents, basePoint: next.focusPoint, scale: currentScale)
+                
                 let currentFocus = CGPoint(
-                    x: startFocus.x + (endFocus.x - startFocus.x) * CGFloat(eased),
-                    y: startFocus.y + (endFocus.y - startFocus.y) * CGFloat(eased)
+                    x: focusA.x + (focusB.x - focusA.x) * CGFloat(eased),
+                    y: focusA.y + (focusB.y - focusA.y) * CGFloat(eased)
                 )
                 
                 let is3D_prev = kf.effectType == .motion3D
                 let is3D_next = next.effectType == .motion3D
                 let startAngles = is3D_prev ? kf.tiltPreset.angles(
-                    focusPoint: startFocus,
+                    focusPoint: focusA,
                     customPitch: kf.customPitch,
                     customYaw: kf.customYaw,
                     customRoll: kf.customRoll
                 ) : (pitch: 0.0, yaw: 0.0, roll: 0.0)
                 
                 let endAngles = is3D_next ? next.tiltPreset.angles(
-                    focusPoint: endFocus,
+                    focusPoint: focusB,
                     customPitch: next.customPitch,
                     customYaw: next.customYaw,
                     customRoll: next.customRoll
