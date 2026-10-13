@@ -18,6 +18,9 @@ public final class CursorTracker: @unchecked Sendable {
     private var pollingTimer: Timer?
     private var lastSampledPosition: CGPoint?
     private var lastRecordedTimestamp: TimeInterval = 0.0
+    private let shapeDetector = CursorShapeDetector()
+    private var currentShape: CursorShape = .arrow
+    private var shapeSampleTick: Int = 0
     public weak var delegate: CursorTrackerDelegate?
     
     public private(set) var recordedEvents: [TelemetryEvent] = []
@@ -55,6 +58,8 @@ public final class CursorTracker: @unchecked Sendable {
             self.isPaused = false
             self.isTracking = true
             self.lastSampledPosition = nil
+            self.currentShape = .arrow
+            self.shapeSampleTick = 0
         }
         
         DispatchQueue.main.async { [weak self] in
@@ -74,6 +79,14 @@ public final class CursorTracker: @unchecked Sendable {
             }
             if let clickMonitor = clickMonitor {
                 self.globalMonitors.append(clickMonitor)
+            }
+            
+            // 2b. Mouse button release (drives press-and-hold cursor animation)
+            let upMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
+                self?.handleMouseEvent(event, type: .mouseUp)
+            }
+            if let upMonitor = upMonitor {
+                self.globalMonitors.append(upMonitor)
             }
             
             // 3. Event monitor for mouse dragging & moving
@@ -107,8 +120,18 @@ public final class CursorTracker: @unchecked Sendable {
         let normalizedY = max(0.0, min(1.0, (targetRect.origin.y + targetRect.height - screenPoint.y) / targetRect.height))
         let position = CGPoint(x: normalizedX, y: normalizedY)
         
+        // Sample system cursor shape at ~20Hz (cheap 16x16 fingerprint)
+        var shapeChanged = false
+        shapeSampleTick += 1
+        if shapeSampleTick % 3 == 0 || shapeSampleTick == 1 {
+            if let shape = shapeDetector.detectCurrentSystemCursor(), shape != currentShape {
+                currentShape = shape
+                shapeChanged = true
+            }
+        }
+        
         // Deduplicate micro jitter if stationary, but emit a stationary anchor event every 0.10s
-        if let last = lastSampledPosition {
+        if let last = lastSampledPosition, !shapeChanged {
             let dx = abs(last.x - position.x)
             let dy = abs(last.y - position.y)
             if dx < 0.001 && dy < 0.001 && (timestamp - lastRecordedTimestamp) < 0.10 {
@@ -121,7 +144,8 @@ public final class CursorTracker: @unchecked Sendable {
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,
             type: .mouseMove,
-            position: position
+            position: position,
+            cursorType: currentShape.rawValue
         )
         recordEvent(telemetryEvent)
     }
@@ -167,7 +191,7 @@ public final class CursorTracker: @unchecked Sendable {
         let normalizedY = max(0.0, min(1.0, (targetRect.origin.y + targetRect.height - screenPoint.y) / targetRect.height))
         let position = CGPoint(x: normalizedX, y: normalizedY)
         
-        let button: MouseButtonType = (event.type == .rightMouseDown || event.type == .rightMouseDragged) ? .right : .left
+        let button: MouseButtonType = (event.type == .rightMouseDown || event.type == .rightMouseDragged || event.type == .rightMouseUp) ? .right : .left
         
         let telemetryEvent = TelemetryEvent(
             timestamp: timestamp,
@@ -175,7 +199,8 @@ public final class CursorTracker: @unchecked Sendable {
             position: position,
             button: button,
             clickCount: event.clickCount,
-            modifierFlags: event.modifierFlags.rawValue
+            modifierFlags: event.modifierFlags.rawValue,
+            cursorType: currentShape.rawValue
         )
         
         recordEvent(telemetryEvent)

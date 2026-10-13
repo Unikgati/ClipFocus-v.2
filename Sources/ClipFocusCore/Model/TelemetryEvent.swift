@@ -5,10 +5,25 @@ import CoreGraphics
 public enum TelemetryEventType: String, Codable, Sendable {
     case mouseMove = "mouse_move"
     case mouseClick = "mouse_click"
+    case mouseUp = "mouse_up"
     case mouseDrag = "mouse_drag"
     case mouseScroll = "mouse_scroll"
     case keyDown = "key_down"
     case windowFocus = "window_focus"
+}
+
+/// Standard macOS system cursor shapes recognized during recording
+public enum CursorShape: String, Codable, Sendable, CaseIterable {
+    case arrow
+    case iBeam = "ibeam"
+    case pointingHand = "pointing_hand"
+    case openHand = "open_hand"
+    case closedHand = "closed_hand"
+    case resizeLeftRight = "resize_left_right"
+    case resizeUpDown = "resize_up_down"
+    case crosshair
+    case dragCopy = "drag_copy"
+    case notAllowed = "not_allowed"
 }
 
 /// Mouse button identifier
@@ -30,6 +45,8 @@ public struct TelemetryEvent: Codable, Identifiable, Sendable {
     public let keyCharacters: String?
     public let activeWindowBounds: CGRect?
     public let activeAppBundleId: String?
+    /// Raw value of `CursorShape` visible at this moment (nil for legacy recordings)
+    public let cursorType: String?
 
     public init(
         id: UUID = UUID(),
@@ -41,7 +58,8 @@ public struct TelemetryEvent: Codable, Identifiable, Sendable {
         modifierFlags: UInt? = nil,
         keyCharacters: String? = nil,
         activeWindowBounds: CGRect? = nil,
-        activeAppBundleId: String? = nil
+        activeAppBundleId: String? = nil,
+        cursorType: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -53,5 +71,6 @@ public struct TelemetryEvent: Codable, Identifiable, Sendable {
         self.keyCharacters = keyCharacters
         self.activeWindowBounds = activeWindowBounds
         self.activeAppBundleId = activeAppBundleId
+        self.cursorType = cursorType
     }
 }

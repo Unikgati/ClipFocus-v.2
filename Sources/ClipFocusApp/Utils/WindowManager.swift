@@ -503,7 +503,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
     
     private func setupRecordingPillPanel() {
         guard let appState = self.appState else { return }
-        let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 270, height: 46))
+        let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 46))
         
         let pillView = RecordingPillWrapper(appState: appState)
         let hostingView = NSHostingView(rootView: pillView.preferredColorScheme(.dark))
@@ -605,7 +605,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             targetScreen = nil
         }
         let screen = targetScreen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
-        let pillWidth: CGFloat = (appState?.isFinalizingRecording == true) ? 310 : 290
+        let pillWidth: CGFloat = (appState?.isFinalizingRecording == true) ? 310 : (appState?.autoStopDuration != nil ? 340 : 290)
         let pillHeight: CGFloat = 46
         let rect = NSRect(
             x: screen.midX - (pillWidth / 2),

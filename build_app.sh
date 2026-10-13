@@ -8,12 +8,22 @@ echo "Copying binary to ClipFocus.app bundle..."
 mkdir -p ClipFocus.app/Contents/MacOS ClipFocus.app/Contents/Resources
 cp .build/release/ClipFocusApp ClipFocus.app/Contents/MacOS/ClipFocusApp
 
+if [ -f Info.plist ]; then
+    echo "Copying Info.plist to Contents..."
+    cp Info.plist ClipFocus.app/Contents/Info.plist
+fi
+
 if [ -f AppIcons/AppIcon.icns ]; then
     echo "Copying AppIcon.icns to Resources..."
     cp AppIcons/AppIcon.icns ClipFocus.app/Contents/Resources/AppIcon.icns
 fi
 
+# Remove quarantine & extended attributes to avoid Gatekeeper block
+xattr -cr ClipFocus.app
+
 echo "Signing ClipFocus.app with Apple Development certificate..."
 codesign -s "Apple Development: ayodyachandra09@gmail.com (3VUJUU6VRY)" --entitlements ClipFocus.entitlements --force --deep ClipFocus.app
+
+xattr -cr ClipFocus.app
 
 echo "ClipFocus is 100% production ready and permanently signed!"

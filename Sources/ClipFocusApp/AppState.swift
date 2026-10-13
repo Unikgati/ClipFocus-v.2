@@ -88,6 +88,21 @@ public final class AppState: @unchecked Sendable {
     public var zoomDimension: ZoomEffectDimension = .twoD
     public var countdownSeconds: CountdownDuration = .threeSeconds
     public var autoZoomOnTyping: Bool = true
+    
+    // Auto-Stop Recording Timer
+    public var autoStopDuration: TimeInterval? = nil // nil = Manual Stop, or duration in seconds (e.g. 1800 for 30 min)
+    public var showCustomTimerPrompt: Bool = false
+    public var customTimerMinutesText: String = "30"
+    
+    public var autoStopTimerLabel: String {
+        guard let dur = autoStopDuration else { return "Timer: Off" }
+        let totalMinutes = Int(dur / 60)
+        if totalMinutes >= 60 && totalMinutes % 60 == 0 {
+            return "\(totalMinutes / 60)h"
+        }
+        return "\(totalMinutes)m"
+    }
+    
     public var hideDesktopIcons: Bool = false {
         didSet {
             setDesktopIconsHidden(hideDesktopIcons)
@@ -531,7 +546,21 @@ public final class AppState: @unchecked Sendable {
         exportProgress = 0.0
     }
     
-    public var telemetryEvents: [TelemetryEvent] = []
+    public var telemetryEvents: [TelemetryEvent] = [] {
+        didSet { cursorOverlayTrack = CursorOverlayTrack(events: telemetryEvents) }
+    }
+    
+    // Styled Cursor Overlay (Screen Studio / FocuSee style)
+    public var hasBakedHardwareCursor: Bool = true
+    public var showStyledCursor: Bool = true { didSet { self.isDirty = true; evaluateCurrentZoom() } }
+    public var cursorSizeScale: Double = 1.25 { didSet { self.isDirty = true; evaluateCurrentZoom() } }
+    public var currentCursorState: CursorOverlayState = .hidden
+    @ObservationIgnored private var cursorOverlayTrack = CursorOverlayTrack(events: [])
+    
+    /// Styled cursor is only drawn when the system cursor was NOT captured into the raw video
+    public var shouldRenderStyledCursor: Bool {
+        !hasBakedHardwareCursor && showStyledCursor && !cursorOverlayTrack.isEmpty
+    }
     public let captureManager = CaptureManager.shared
     private let autoZoomEngine = AutoZoomEngine()
     private var timeObserverToken: Any?
@@ -544,6 +573,12 @@ public final class AppState: @unchecked Sendable {
     public init() {
         checkPermissions()
         refreshHardwareDevices()
+        
+        captureManager.onAutoStopTriggered = { [weak self] in
+            Task { @MainActor in
+                self?.triggerStopRecording()
+            }
+        }
     }
     
     public func checkPermissions() {
@@ -774,6 +809,8 @@ public final class AppState: @unchecked Sendable {
                 let isMicActive = (self.selectedMic != "None" && !self.selectedMic.isEmpty)
                 let isAudioActive = (self.selectedAudio != "None" && !self.selectedAudio.isEmpty)
                 
+                self.captureManager.autoStopDuration = self.autoStopDuration
+                
                 try await self.captureManager.startRecording(
                     mode: self.selectedMode?.rawValue ?? "Full Screen",
                     targetDisplayID: self.selectedDisplayID,
@@ -997,6 +1034,9 @@ public final class AppState: @unchecked Sendable {
             }
         }
         self.telemetryEvents = loadedEvents
+        self.hasBakedHardwareCursor = project?.hasBakedHardwareCursor ?? true
+        self.showStyledCursor = project?.showStyledCursor ?? true
+        self.cursorSizeScale = Double(project?.cursorSettings.sizeScale ?? 1.25)
         
         // Populate keyframes directly from project (empty if user did not click during recording)
         let keyframes = project?.zoomKeyframes ?? []
@@ -2355,7 +2395,9 @@ public final class AppState: @unchecked Sendable {
             activeColorIndex: self.activeColorIndex,
             tiltIntensity: self.tiltIntensity,
             disableZoom: self.disableZoom,
-            cursorSettings: CursorVisualSettings(),
+            cursorSettings: CursorVisualSettings(sizeScale: CGFloat(self.cursorSizeScale)),
+            hasBakedHardwareCursor: self.hasBakedHardwareCursor,
+            showStyledCursor: self.showStyledCursor,
             webcamSettings: WebcamLayoutSettings(),
             isAudioMuted: self.isAudioMuted,
             audioVolume: self.audioVolume,
@@ -2630,7 +2672,9 @@ public final class AppState: @unchecked Sendable {
                 activeColorIndex: self.activeColorIndex,
                 tiltIntensity: self.tiltIntensity,
                 disableZoom: self.disableZoom,
-                cursorSettings: CursorVisualSettings(),
+                cursorSettings: CursorVisualSettings(sizeScale: CGFloat(self.cursorSizeScale)),
+                hasBakedHardwareCursor: self.hasBakedHardwareCursor,
+                showStyledCursor: self.showStyledCursor,
                 webcamSettings: WebcamLayoutSettings(),
                 isAudioMuted: self.isAudioMuted,
                 audioVolume: self.audioVolume,
@@ -2845,7 +2889,9 @@ public final class AppState: @unchecked Sendable {
                         tiltIntensity: self.tiltIntensity,
                         disableZoom: self.disableZoom,
                         scaleFactor: scaleFactor,
-                        videoSegments: self.videoSegments
+                        videoSegments: self.videoSegments,
+                        renderStyledCursor: self.shouldRenderStyledCursor,
+                        cursorSizeScale: CGFloat(self.cursorSizeScale)
                     )
                     
                     VideoCompositorEngine.warmup(renderSize: renderSize)
@@ -2870,10 +2916,10 @@ public final class AppState: @unchecked Sendable {
                 exportSession.shouldOptimizeForNetworkUse = true
                 
                 // Async progress monitoring safely dispatching to MainActor
-                let progressTask = Task { @MainActor [weak self] in
+                let progressTask = Task { @MainActor in
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 100_000_000)
-                        guard let self = self, let session = self.activeExportSession else { break }
+                        guard let session = self.activeExportSession else { break }
                         if session.status == .exporting {
                             self.exportProgress = max(0.05, min(0.99, Double(session.progress)))
                         } else {
@@ -2920,6 +2966,13 @@ public final class AppState: @unchecked Sendable {
     }
     
     public func evaluateCurrentZoom() {
+        // Styled cursor follows source-video telemetry (hidden inside timeline gaps)
+        if shouldRenderStyledCursor {
+            self.currentCursorState = cursorOverlayTrack.state(atSourceTime: sourceVideoTime(for: currentTime))
+        } else if currentCursorState.isVisible {
+            self.currentCursorState = .hidden
+        }
+        
         if disableZoom {
             self.currentZoomScale = 1.0
             self.currentFocusPoint = CGPoint(x: 0.5, y: 0.5)

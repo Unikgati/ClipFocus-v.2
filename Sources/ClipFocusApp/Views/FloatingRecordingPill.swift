@@ -191,14 +191,36 @@ public struct FloatingRecordingPill: View {
                     .onHover { isStopHovered = $0 }
                     .help("Stop and Edit Recording")
                     
-                    // 5. Elapsed Duration Time (MM:SS)
-                    Text(formatTime(appState.captureManager.recordingDuration))
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundStyle(Color.white)
-                        .opacity(appState.isRecordingPaused ? 0.5 : 1.0)
+                    // 5. Elapsed Duration Time (MM:SS) with Auto-Stop Target indicator
+                    HStack(spacing: 5) {
+                        Text(formatTime(appState.captureManager.recordingDuration))
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .foregroundStyle(Color.white)
+                        
+                        if let limit = appState.autoStopDuration {
+                            HStack(spacing: 2) {
+                                Image(systemName: "timer")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text(formatTime(limit))
+                                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                                    .monospacedDigit()
+                            }
+                            .foregroundStyle(Color.blue)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2.5)
+                            .background(Color.blue.opacity(0.18))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.blue.opacity(0.3), lineWidth: 1)
+                            )
+                            .help("Auto-Stop target duration")
+                        }
+                    }
+                    .opacity(appState.isRecordingPaused ? 0.5 : 1.0)
                 }
             }
         }
@@ -215,8 +237,14 @@ public struct FloatingRecordingPill: View {
     }
     
     private func formatTime(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%02d:%02d", mins, secs)
+        let total = Int(seconds)
+        let hrs = total / 3600
+        let mins = (total % 3600) / 60
+        let secs = total % 60
+        if hrs > 0 {
+            return String(format: "%d:%02d:%02d", hrs, mins, secs)
+        } else {
+            return String(format: "%02d:%02d", mins, secs)
+        }
     }
 }

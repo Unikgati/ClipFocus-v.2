@@ -23,6 +23,10 @@ public struct VideoCompositorConfig: Sendable {
     public var scaleFactor: CGFloat
     public var videoSegments: [MediaClipSegment]
     
+    // Styled Cursor Overlay
+    public var renderStyledCursor: Bool
+    public var cursorSizeScale: CGFloat
+    
     public init(
         renderSize: CGSize,
         padding: CGFloat = 20.0,
@@ -35,7 +39,9 @@ public struct VideoCompositorConfig: Sendable {
         tiltIntensity: Double = 1.0,
         disableZoom: Bool = false,
         scaleFactor: CGFloat = 1.0,
-        videoSegments: [MediaClipSegment] = []
+        videoSegments: [MediaClipSegment] = [],
+        renderStyledCursor: Bool = false,
+        cursorSizeScale: CGFloat = 1.25
     ) {
         self.renderSize = renderSize
         self.padding = padding
@@ -49,6 +55,8 @@ public struct VideoCompositorConfig: Sendable {
         self.disableZoom = disableZoom
         self.scaleFactor = scaleFactor > 0 ? scaleFactor : 1.0
         self.videoSegments = videoSegments
+        self.renderStyledCursor = renderStyledCursor
+        self.cursorSizeScale = cursorSizeScale
     }
 }
 
@@ -177,6 +185,17 @@ public final class VideoCompositorEngine: Sendable {
         let renderSize = config.renderSize
         let autoZoom = self.autoZoomEngine
         
+        // Styled cursor overlay (pre-indexed once, evaluated per frame)
+        let cursorTrack: CursorOverlayTrack? = config.renderStyledCursor ? CursorOverlayTrack(events: config.telemetryEvents) : nil
+        let cursorMasters: [CursorShape: (CIImage, CursorShapeDescriptor)] = config.renderStyledCursor ? {
+            var map: [CursorShape: (CIImage, CursorShapeDescriptor)] = [:]
+            for shape in CursorShape.allCases {
+                let desc = CursorArtwork.descriptor(for: shape)
+                map[shape] = (CIImage(cgImage: desc.image), desc)
+            }
+            return map
+        }() : [:]
+        
         let videoComp = AVMutableVideoComposition(asset: asset) { request in
             let sourceImage = request.sourceImage
             let srcExtent = sourceImage.extent
@@ -184,17 +203,17 @@ public final class VideoCompositorEngine: Sendable {
             let srcH = max(1.0, srcExtent.height)
             
             let timeSec = request.compositionTime.seconds
+            let sourceTime = config.videoSegments.first(where: {
+                timeSec >= ($0.timelineStartTime - 0.0001) && timeSec <= ($0.timelineEndTime + 0.0001)
+            }).map {
+                $0.sourceStartTime + max(0, min($0.duration, timeSec - $0.timelineStartTime))
+            }
             
             // 1. Evaluate Viewport for current frame
             let viewport: ViewportState
             if config.disableZoom {
                 viewport = .fullScreen
             } else {
-                let sourceTime = config.videoSegments.first(where: {
-                    timeSec >= ($0.timelineStartTime - 0.0001) && timeSec <= ($0.timelineEndTime + 0.0001)
-                }).map {
-                    $0.sourceStartTime + max(0, min($0.duration, timeSec - $0.timelineStartTime))
-                }
                 viewport = autoZoom.evaluateViewport(at: timeSec, sourceTime: sourceTime, with: config.zoomKeyframes, telemetry: config.telemetryEvents)
             }
             
@@ -386,7 +405,36 @@ public final class VideoCompositorEngine: Sendable {
                 }
             }
             
-            // 8. Final Composite over Dynamic Canvas Background
+            // 8. Styled cursor: projected through the same 3D card matrix so it rides zoom & tilt exactly
+            if let track = cursorTrack {
+                let state = track.state(atSourceTime: sourceTime)
+                if state.isVisible, let (cursorImg, desc) = cursorMasters[state.shape] ?? cursorMasters[.arrow] {
+                    let bx = (state.position.x - 0.5) * baseCardW
+                    let by = (state.position.y - 0.5) * baseCardH
+                    let tip = projectCorner(x: bx, y: by)
+                    let unitX = projectCorner(x: bx + 1.0, y: by)
+                    let localScale = max(0.01, hypot(unitX.x - tip.x, unitX.y - tip.y))
+                    
+                    let arrowCardPts = baseCardW * CursorOverlayTrack.baseHeightFraction * config.cursorSizeScale * state.scale
+                    let unitToRender = (arrowCardPts / desc.arrowHeight) * localScale
+                    let imgH = cursorImg.extent.height
+                    let pxPerUnit = imgH / desc.canvasSize.height
+                    let k = unitToRender / pxPerUnit
+                    let hx = desc.hotspot.x * pxPerUnit
+                    let hy = imgH - desc.hotspot.y * pxPerUnit
+                    
+                    let scaled = cursorImg.applyingFilter("CILanczosScaleTransform", parameters: [
+                        kCIInputScaleKey: k,
+                        kCIInputAspectRatioKey: 1.0
+                    ])
+                    let placed = scaled
+                        .transformed(by: CGAffineTransform(translationX: tip.x - hx * k, y: tip.y - hy * k))
+                        .cropped(to: cardBounds)
+                    compositeCard = placed.composited(over: compositeCard)
+                }
+            }
+            
+            // 9. Final Composite over Dynamic Canvas Background
             let finalFrame = compositeCard.composited(over: bgImage).cropped(to: CGRect(origin: .zero, size: renderSize))
             request.finish(with: finalFrame, context: Self.sharedCIContext)
         }

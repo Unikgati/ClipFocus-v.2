@@ -16,6 +16,10 @@ public final class CaptureManager: @unchecked Sendable {
     public private(set) var lastRecordedProject: ClipFocusProject?
     public private(set) var lastErrorMessage: String?
     
+    /// Optional Auto-Stop duration in seconds (e.g. 1800 for 30 minutes). When elapsed, invokes onAutoStopTriggered.
+    public var autoStopDuration: TimeInterval? = nil
+    public var onAutoStopTriggered: (@Sendable () -> Void)? = nil
+    
     private let captureEngine = ScreenCaptureEngine()
     private let cursorTracker = CursorTracker()
     private let autoZoomEngine = AutoZoomEngine()
@@ -112,7 +116,7 @@ public final class CaptureManager: @unchecked Sendable {
             captureSystemAudio: captureSystemAudio,
             captureMicrophoneAudio: captureMicrophoneAudio,
             targetMicrophoneName: targetMicrophoneName,
-            showHardwareCursor: true, // Native hardware cursor captured crisply in video stream
+            showHardwareCursor: false, // System cursor hidden: styled vector cursor is rendered from telemetry (Screen Studio style)
             sourceRect: sourceRect,
             targetWindowID: targetWindowID,
             excludedWindowIDs: excludedWindowIDs
@@ -144,10 +148,16 @@ public final class CaptureManager: @unchecked Sendable {
             self.pauseDate = nil
             self.lastErrorMessage = nil
             
-            // Duration ticker
+            // Duration ticker with Auto-Stop threshold evaluation (0% CPU overhead)
             self.durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 guard let self = self, self.isRecording, !self.isPaused, let resume = self.lastResumeTime else { return }
-                self.recordingDuration = self.accumulatedDuration + Date().timeIntervalSince(resume)
+                let current = self.accumulatedDuration + Date().timeIntervalSince(resume)
+                self.recordingDuration = current
+                
+                if let limit = self.autoStopDuration, limit > 0, current >= limit {
+                    self.autoStopDuration = nil
+                    self.onAutoStopTriggered?()
+                }
             }
         }
     }
@@ -231,6 +241,7 @@ public final class CaptureManager: @unchecked Sendable {
             rawVideoFilename: finalVideoURL.path,
             telemetryFilename: telemetryURL.path,
             aspectRatio: .widescreen16x9,
+            hasBakedHardwareCursor: false,
             zoomKeyframes: keyframes
         )
         

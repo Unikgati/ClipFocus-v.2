@@ -181,6 +181,11 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
     public var disableZoom: Bool
     
     public var cursorSettings: CursorVisualSettings
+    /// True when the macOS system cursor was captured inside the raw video (legacy recordings).
+    /// New recordings hide it and render the styled cursor overlay instead.
+    public var hasBakedHardwareCursor: Bool
+    /// User toggle for the styled cursor overlay
+    public var showStyledCursor: Bool
     public var webcamSettings: WebcamLayoutSettings
     
     // Audio & Track Visibility States
@@ -227,6 +232,8 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
         tiltIntensity: Double = 1.0,
         disableZoom: Bool = false,
         cursorSettings: CursorVisualSettings = CursorVisualSettings(),
+        hasBakedHardwareCursor: Bool = true,
+        showStyledCursor: Bool = true,
         webcamSettings: WebcamLayoutSettings = WebcamLayoutSettings(),
         isAudioMuted: Bool = false,
         audioVolume: Double = 1.0,
@@ -266,6 +273,8 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
         self.tiltIntensity = tiltIntensity
         self.disableZoom = disableZoom
         self.cursorSettings = cursorSettings
+        self.hasBakedHardwareCursor = hasBakedHardwareCursor
+        self.showStyledCursor = showStyledCursor
         self.webcamSettings = webcamSettings
         self.isAudioMuted = isAudioMuted
         self.audioVolume = audioVolume
@@ -312,6 +321,8 @@ public struct ClipFocusProject: Codable, Identifiable, Sendable {
         self.disableZoom = try container.decodeIfPresent(Bool.self, forKey: .disableZoom) ?? false
         
         self.cursorSettings = try container.decodeIfPresent(CursorVisualSettings.self, forKey: .cursorSettings) ?? CursorVisualSettings()
+        self.hasBakedHardwareCursor = try container.decodeIfPresent(Bool.self, forKey: .hasBakedHardwareCursor) ?? true
+        self.showStyledCursor = try container.decodeIfPresent(Bool.self, forKey: .showStyledCursor) ?? true
         self.webcamSettings = try container.decodeIfPresent(WebcamLayoutSettings.self, forKey: .webcamSettings) ?? WebcamLayoutSettings()
         
         self.isAudioMuted = try container.decodeIfPresent(Bool.self, forKey: .isAudioMuted) ?? false

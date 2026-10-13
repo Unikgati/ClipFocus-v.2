@@ -342,6 +342,39 @@ public struct EditorStudioView: View {
                 }
             }
             
+            // C2. Styled Cursor (Screen Studio / FocuSee style)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Cursor")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Toggle("", isOn: $appState.showStyledCursor)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .labelsHidden()
+                        .disabled(appState.hasBakedHardwareCursor)
+                }
+                
+                if appState.hasBakedHardwareCursor {
+                    Text("This recording already contains the system cursor. Record again to use the sharp styled cursor.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Size").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.1fx", appState.cursorSizeScale)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.white)
+                        }
+                        Slider(value: $appState.cursorSizeScale, in: 0.6...3.0).tint(.blue)
+                    }
+                    .disabled(!appState.showStyledCursor)
+                    .opacity(appState.showStyledCursor ? 1.0 : 0.4)
+                }
+            }
+            
             // D. Background Gradients & Colors
             VStack(alignment: .leading, spacing: 10) {
                 Text("Background")
@@ -672,7 +705,9 @@ public struct EditorStudioView: View {
                             cornerRadius: cornerRadius,
                             shadowRadius: shadowRadius,
                             is3DEnabled: is3D,
-                            previewScale: previewScale
+                            previewScale: previewScale,
+                            cursorState: appState.currentCursorState,
+                            cursorSizeScale: CGFloat(appState.cursorSizeScale)
                         )
                         .frame(width: cardW, height: cardH)
                     } else {

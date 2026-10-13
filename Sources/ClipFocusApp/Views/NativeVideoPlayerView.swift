@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import AppKit
+import ClipFocusCore
 
 /// High-performance 3D Cinematic Perspective Video Player
 /// Directly leverages AVPlayerLayer and CoreAnimation CATransform3D (m34 perspective)
@@ -10,6 +11,11 @@ public final class CinematicPlayerNSView: NSView {
     private let perspectiveLayer = CALayer()
     private let contentLayer = CALayer()
     private let clipLayer = CALayer()
+    private let cursorLayer = CALayer()
+    
+    private var cursorState: CursorOverlayState = .hidden
+    private var cursorSizeScale: CGFloat = 1.25
+    private var currentLoadedShape: CursorShape? = nil
     
     private var currentScale: CGFloat = 1.0
     private var currentFocusPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
@@ -98,7 +104,19 @@ public final class CinematicPlayerNSView: NSView {
         playerLayer.minificationFilter = .trilinear
         playerLayer.magnificationFilter = .linear
         
+        // Styled vector cursor rides inside the card so zoom/pan/tilt apply identically to the video
+        cursorLayer.contents = CursorArtwork.masterImage
+        cursorLayer.contentsGravity = .resize
+        cursorLayer.minificationFilter = .trilinear
+        cursorLayer.magnificationFilter = .linear
+        cursorLayer.anchorPoint = CGPoint(
+            x: CursorArtwork.hotspot.x / CursorArtwork.canvasSize.width,
+            y: CursorArtwork.hotspot.y / CursorArtwork.canvasSize.height
+        )
+        cursorLayer.isHidden = true
+        
         clipLayer.addSublayer(playerLayer)
+        clipLayer.addSublayer(cursorLayer)
         contentLayer.addSublayer(clipLayer)
         perspectiveLayer.addSublayer(contentLayer)
         layer?.addSublayer(perspectiveLayer)
@@ -122,6 +140,7 @@ public final class CinematicPlayerNSView: NSView {
         clipLayer.frame = contentLayer.bounds
         playerLayer.frame = clipLayer.bounds
         updateCardTransform()
+        updateCursorLayer()
         CATransaction.commit()
     }
     
@@ -175,6 +194,39 @@ public final class CinematicPlayerNSView: NSView {
         contentLayer.transform = cardTransform
     }
     
+    private func updateCursorLayer() {
+        guard cursorState.isVisible, bounds.width > 1, bounds.height > 1 else {
+            cursorLayer.isHidden = true
+            return
+        }
+        cursorLayer.isHidden = false
+        
+        let desc = CursorArtwork.descriptor(for: cursorState.shape)
+        if currentLoadedShape != cursorState.shape {
+            cursorLayer.contents = desc.image
+            currentLoadedShape = cursorState.shape
+        }
+        
+        cursorLayer.anchorPoint = CGPoint(
+            x: desc.hotspot.x / desc.canvasSize.width,
+            y: desc.hotspot.y / desc.canvasSize.height
+        )
+        
+        let arrowPts = bounds.width * CursorOverlayTrack.baseHeightFraction * cursorSizeScale
+        let unit = arrowPts / desc.arrowHeight
+        cursorLayer.bounds = CGRect(
+            x: 0, y: 0,
+            width: desc.canvasSize.width * unit,
+            height: desc.canvasSize.height * unit
+        )
+        cursorLayer.position = CGPoint(
+            x: cursorState.position.x * bounds.width,
+            y: cursorState.position.y * bounds.height
+        )
+        let s = cursorState.scale
+        cursorLayer.transform = CATransform3DMakeScale(s, s, 1.0)
+    }
+    
     public func update(
         player: AVPlayer?,
         scale: CGFloat,
@@ -187,7 +239,9 @@ public final class CinematicPlayerNSView: NSView {
         cornerRadius: CGFloat,
         shadowRadius: CGFloat,
         is3DEnabled: Bool,
-        previewScale: CGFloat = 1.0
+        previewScale: CGFloat = 1.0,
+        cursorState: CursorOverlayState = .hidden,
+        cursorSizeScale: CGFloat = 1.25
     ) {
         if playerLayer.player !== player {
             playerLayer.player = player
@@ -203,6 +257,8 @@ public final class CinematicPlayerNSView: NSView {
         self.shadowRadius = shadowRadius
         self.is3DEnabled = is3DEnabled
         self.previewScale = previewScale
+        self.cursorState = cursorState
+        self.cursorSizeScale = cursorSizeScale
         
         clipLayer.cornerRadius = cornerRadius
         playerLayer.cornerRadius = cornerRadius
@@ -210,6 +266,7 @@ public final class CinematicPlayerNSView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         updateCardTransform()
+        updateCursorLayer()
         CATransaction.commit()
     }
 }
@@ -227,6 +284,8 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
     public var shadowRadius: CGFloat = 20.0
     public var is3DEnabled: Bool = true
     public var previewScale: CGFloat = 1.0
+    public var cursorState: CursorOverlayState = .hidden
+    public var cursorSizeScale: CGFloat = 1.25
 
     public init(
         player: AVPlayer,
@@ -240,7 +299,9 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
         cornerRadius: CGFloat = 12.0,
         shadowRadius: CGFloat = 20.0,
         is3DEnabled: Bool = true,
-        previewScale: CGFloat = 1.0
+        previewScale: CGFloat = 1.0,
+        cursorState: CursorOverlayState = .hidden,
+        cursorSizeScale: CGFloat = 1.25
     ) {
         self.player = player
         self.scale = scale
@@ -254,6 +315,8 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
         self.shadowRadius = shadowRadius
         self.is3DEnabled = is3DEnabled
         self.previewScale = previewScale
+        self.cursorState = cursorState
+        self.cursorSizeScale = cursorSizeScale
     }
 
     public func makeNSView(context: Context) -> CinematicPlayerNSView {
@@ -270,7 +333,9 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
             cornerRadius: cornerRadius,
             shadowRadius: shadowRadius,
             is3DEnabled: is3DEnabled,
-            previewScale: previewScale
+            previewScale: previewScale,
+            cursorState: cursorState,
+            cursorSizeScale: cursorSizeScale
         )
         return view
     }
@@ -288,7 +353,9 @@ public struct NativeVideoPlayerView: NSViewRepresentable {
             cornerRadius: cornerRadius,
             shadowRadius: shadowRadius,
             is3DEnabled: is3DEnabled,
-            previewScale: previewScale
+            previewScale: previewScale,
+            cursorState: cursorState,
+            cursorSizeScale: cursorSizeScale
         )
     }
 }
