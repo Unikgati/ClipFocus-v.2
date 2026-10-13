@@ -429,7 +429,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             editorWindow?.orderOut(nil)
             
             if let pill = recordingPillPanel {
-                repositionRecordingPill()
+                updateRecordingPillPosition(animate: false)
                 pill.invalidateShadow()
                 pill.orderFrontRegardless()
             }
@@ -596,7 +596,7 @@ public final class WindowManager: NSObject, NSWindowDelegate {
         panel.setFrame(rect, display: true, animate: false)
     }
     
-    private func repositionRecordingPill() {
+    public func updateRecordingPillPosition(animate: Bool = false) {
         guard let panel = recordingPillPanel else { return }
         let targetScreen: NSScreen?
         if let targetDisplayID = appState?.selectedDisplayID {
@@ -605,7 +605,16 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             targetScreen = nil
         }
         let screen = targetScreen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
-        let pillWidth: CGFloat = (appState?.isFinalizingRecording == true) ? 310 : (appState?.autoStopDuration != nil ? 340 : 290)
+        let pillWidth: CGFloat
+        if appState?.isFinalizingRecording == true {
+            pillWidth = 310
+        } else if appState?.captureManager.isLowDiskSpacePaused == true {
+            pillWidth = 380
+        } else if appState?.autoStopDuration != nil {
+            pillWidth = 340
+        } else {
+            pillWidth = 290
+        }
         let pillHeight: CGFloat = 46
         let rect = NSRect(
             x: screen.midX - (pillWidth / 2),
@@ -613,7 +622,14 @@ public final class WindowManager: NSObject, NSWindowDelegate {
             width: pillWidth,
             height: pillHeight
         )
-        panel.setFrame(rect, display: true)
+        if animate {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                panel.animator().setFrame(rect, display: true)
+            }
+        } else {
+            panel.setFrame(rect, display: true)
+        }
     }
     
     private func setupAreaOverlayPanel() {

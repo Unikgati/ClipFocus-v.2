@@ -579,6 +579,12 @@ public final class AppState: @unchecked Sendable {
                 self?.triggerStopRecording()
             }
         }
+        
+        captureManager.onLowDiskSpacePaused = { [weak self] availableBytes in
+            Task { @MainActor in
+                self?.handleLowDiskSpacePaused(availableBytes: availableBytes)
+            }
+        }
     }
     
     public func checkPermissions() {
@@ -824,8 +830,22 @@ public final class AppState: @unchecked Sendable {
                 )
                 self.currentView = .recording
             } catch {
-                self.errorMessage = error.localizedDescription
-                self.showPermissionsWindow = true
+                if (error as NSError).code == 507 {
+                    let alert = NSAlert()
+                    alert.messageText = "Penyimpanan Tidak Cukup"
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Buka Trash di Finder")
+                    alert.addButton(withTitle: "Oke")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        if let trashURL = FileManager.default.urls(for: .trashDirectory, in: .userDomainMask).first {
+                            NSWorkspace.shared.open(trashURL)
+                        }
+                    }
+                } else {
+                    self.errorMessage = error.localizedDescription
+                    self.showPermissionsWindow = true
+                }
             }
         }
     }
@@ -835,11 +855,62 @@ public final class AppState: @unchecked Sendable {
         captureManager.isPaused
     }
     
+    @MainActor
     public func togglePauseRecording() {
         if captureManager.isPaused {
+            if captureManager.isLowDiskSpacePaused {
+                if let available = CaptureManager.queryAvailableDiskSpace(for: captureManager.currentOutputFileURL),
+                   available < CaptureManager.minimumDiskSpaceBytes {
+                    let mb = available / (1024 * 1024)
+                    let alert = NSAlert()
+                    alert.messageText = "Ruang Penyimpanan Masih Kurang"
+                    alert.informativeText = "Sisa ruang penyimpanan Anda saat ini adalah \(mb) MB (dibutuhkan minimal 300 MB).\n\nSilakan hapus file atau kosongkan Trash di Mac Anda terlebih dahulu."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Buka Trash di Finder")
+                    alert.addButton(withTitle: "Oke")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        if let trashURL = FileManager.default.urls(for: .trashDirectory, in: .userDomainMask).first {
+                            NSWorkspace.shared.open(trashURL)
+                        }
+                    }
+                    return
+                }
+            }
             captureManager.resumeRecording()
+            WindowManager.shared.updateRecordingPillPosition(animate: true)
         } else {
             captureManager.pauseRecording()
+            WindowManager.shared.updateRecordingPillPosition(animate: true)
+        }
+    }
+    
+    @MainActor
+    public func handleLowDiskSpacePaused(availableBytes: Int64) {
+        let mb = availableBytes / (1024 * 1024)
+        NSLog("[ClipFocus] Low disk space detected (%lld MB available). Recording auto-paused safely.", mb)
+        
+        WindowManager.shared.updateRecordingPillPosition(animate: true)
+        
+        let alert = NSAlert()
+        alert.messageText = "Penyimpanan Hampir Habis (Perekaman Dijeda)"
+        alert.informativeText = "Sisa ruang disk Anda tersisa \(mb) MB (di bawah batas aman 300 MB).\n\nPerekaman otomatis dijeda agar file video tidak rusak. Silakan bersihkan file atau kosongkan Trash, lalu lanjutkan perekaman atau simpan rekaman yang sudah ada."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Lanjutkan Rekam (Resume)")
+        alert.addButton(withTitle: "Simpan Rekaman (Stop & Save)")
+        alert.addButton(withTitle: "Buka Trash di Finder")
+        
+        let resp = alert.runModal()
+        switch resp {
+        case .alertFirstButtonReturn:
+            self.togglePauseRecording()
+        case .alertSecondButtonReturn:
+            self.triggerStopRecording()
+        case .alertThirdButtonReturn:
+            if let trashURL = FileManager.default.urls(for: .trashDirectory, in: .userDomainMask).first {
+                NSWorkspace.shared.open(trashURL)
+            }
+        default:
+            break
         }
     }
     

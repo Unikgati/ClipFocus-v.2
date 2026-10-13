@@ -10,6 +10,8 @@ public final class CaptureManager: @unchecked Sendable {
     
     public private(set) var isRecording: Bool = false
     public private(set) var isPaused: Bool = false
+    public private(set) var isLowDiskSpacePaused: Bool = false
+    public private(set) var availableDiskSpaceBytes: Int64? = nil
     public private(set) var recordingDuration: TimeInterval = 0.0
     public private(set) var hasScreenCapturePermission: Bool = false
     public private(set) var currentOutputFileURL: URL?
@@ -20,6 +22,12 @@ public final class CaptureManager: @unchecked Sendable {
     public var autoStopDuration: TimeInterval? = nil
     public var onAutoStopTriggered: (@Sendable () -> Void)? = nil
     
+    /// Callback triggered when available disk space drops below safe threshold (300 MB) and recording is auto-paused.
+    public var onLowDiskSpacePaused: (@Sendable (Int64) -> Void)? = nil
+    
+    /// Safe minimum disk space buffer (300 MB) to prevent AVAssetWriter failure and file corruption
+    public static let minimumDiskSpaceBytes: Int64 = 300 * 1024 * 1024
+    
     private let captureEngine = ScreenCaptureEngine()
     private let cursorTracker = CursorTracker()
     private let autoZoomEngine = AutoZoomEngine()
@@ -27,9 +35,24 @@ public final class CaptureManager: @unchecked Sendable {
     private var accumulatedDuration: TimeInterval = 0.0
     private var lastResumeTime: Date?
     private var pauseDate: Date?
+    private var lastDiskCheckTime: Date = .distantPast
+    private var diskCheckInterval: TimeInterval = 5.0
     
     public init() {
         checkPermissions()
+    }
+    
+    /// Query remaining disk space on the volume containing the target URL
+    public static func queryAvailableDiskSpace(for url: URL? = nil) -> Int64? {
+        let targetURL = url ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: "/")
+        if let values = try? targetURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]) {
+            if let important = values.volumeAvailableCapacityForImportantUsage {
+                return important
+            } else if let standard = values.volumeAvailableCapacity {
+                return Int64(standard)
+            }
+        }
+        return nil
     }
     
     /// Check current macOS screen capture permission
@@ -84,6 +107,17 @@ public final class CaptureManager: @unchecked Sendable {
         let outputDir = moviesDir.appendingPathComponent("ClipFocus", isDirectory: true)
         if !fileManager.fileExists(atPath: outputDir.path) {
             try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        }
+        
+        // Proactive pre-flight check: Ensure there is at least 300 MB free before recording starts
+        if let initialAvailable = CaptureManager.queryAvailableDiskSpace(for: outputDir),
+           initialAvailable < CaptureManager.minimumDiskSpaceBytes {
+            let mb = initialAvailable / (1024 * 1024)
+            throw NSError(
+                domain: "ClipFocus",
+                code: 507,
+                userInfo: [NSLocalizedDescriptionKey: "Ruang penyimpanan hampir habis (tersisa \(mb) MB). Diperlukan minimal 300 MB untuk memulai rekaman. Silakan bersihkan ruang disk terlebih dahulu."]
+            )
         }
         
         let formatter = DateFormatter()
@@ -142,13 +176,17 @@ public final class CaptureManager: @unchecked Sendable {
             self.currentOutputFileURL = videoURL
             self.isRecording = true
             self.isPaused = false
+            self.isLowDiskSpacePaused = false
+            self.availableDiskSpaceBytes = nil
+            self.lastDiskCheckTime = Date()
+            self.diskCheckInterval = 5.0
             self.accumulatedDuration = 0.0
             self.recordingDuration = 0.0
             self.lastResumeTime = Date()
             self.pauseDate = nil
             self.lastErrorMessage = nil
             
-            // Duration ticker with Auto-Stop threshold evaluation (0% CPU overhead)
+            // Duration ticker with Auto-Stop threshold evaluation & Adaptive Low-Disk monitor (0% CPU overhead)
             self.durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 guard let self = self, self.isRecording, !self.isPaused, let resume = self.lastResumeTime else { return }
                 let current = self.accumulatedDuration + Date().timeIntervalSince(resume)
@@ -158,8 +196,52 @@ public final class CaptureManager: @unchecked Sendable {
                     self.autoStopDuration = nil
                     self.onAutoStopTriggered?()
                 }
+                
+                // Adaptive disk space monitoring: throttled and evaluated in background queue
+                let now = Date()
+                if now.timeIntervalSince(self.lastDiskCheckTime) >= self.diskCheckInterval {
+                    self.lastDiskCheckTime = now
+                    self.performPeriodicDiskCheck()
+                }
             }
         }
+    }
+    
+    /// Throttled, non-blocking disk capacity check to safely auto-pause before disk fills up completely
+    private func performPeriodicDiskCheck() {
+        guard let outputURL = self.currentOutputFileURL else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let available = CaptureManager.queryAvailableDiskSpace(for: outputURL) else { return }
+            
+            DispatchQueue.main.async {
+                guard let self = self, self.isRecording else { return }
+                
+                // Adaptive interval:
+                // > 5 GB free: check every 6.0s (0% impact)
+                // 1 GB - 5 GB free: check every 3.0s
+                // < 1 GB free: check every 1.5s
+                if available > 5 * 1024 * 1024 * 1024 {
+                    self.diskCheckInterval = 6.0
+                } else if available > 1024 * 1024 * 1024 {
+                    self.diskCheckInterval = 3.0
+                } else {
+                    self.diskCheckInterval = 1.5
+                }
+                
+                if available < CaptureManager.minimumDiskSpaceBytes && !self.isPaused {
+                    self.pauseDueToLowDiskSpace(availableBytes: available)
+                }
+            }
+        }
+    }
+    
+    /// Automatically pause recording due to critically low disk space (< 300 MB)
+    private func pauseDueToLowDiskSpace(availableBytes: Int64) {
+        guard isRecording, !isPaused else { return }
+        pauseRecording()
+        isLowDiskSpacePaused = true
+        availableDiskSpaceBytes = availableBytes
+        onLowDiskSpacePaused?(availableBytes)
     }
     
     /// Pause current recording session
@@ -175,6 +257,18 @@ public final class CaptureManager: @unchecked Sendable {
     /// Resume paused recording session
     public func resumeRecording() {
         guard isRecording, isPaused, let pause = pauseDate else { return }
+        
+        // If recording was paused due to low disk space, re-verify available capacity
+        if isLowDiskSpacePaused {
+            if let available = CaptureManager.queryAvailableDiskSpace(for: currentOutputFileURL),
+               available < CaptureManager.minimumDiskSpaceBytes {
+                self.availableDiskSpaceBytes = available
+                return
+            }
+            self.isLowDiskSpacePaused = false
+            self.availableDiskSpaceBytes = nil
+        }
+        
         let pausedDuration = Date().timeIntervalSince(pause)
         lastResumeTime = Date()
         pauseDate = nil
@@ -197,6 +291,8 @@ public final class CaptureManager: @unchecked Sendable {
         await MainActor.run {
             self.isRecording = false
             self.isPaused = false
+            self.isLowDiskSpacePaused = false
+            self.availableDiskSpaceBytes = nil
             self.recordingDuration = 0.0
             self.currentOutputFileURL = nil
         }
@@ -248,6 +344,8 @@ public final class CaptureManager: @unchecked Sendable {
         await MainActor.run {
             self.isRecording = false
             self.isPaused = false
+            self.isLowDiskSpacePaused = false
+            self.availableDiskSpaceBytes = nil
             self.lastRecordedProject = project
         }
         

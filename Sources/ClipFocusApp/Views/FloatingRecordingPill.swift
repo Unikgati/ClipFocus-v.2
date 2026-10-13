@@ -102,6 +102,80 @@ public struct FloatingRecordingPill: View {
                     .clipShape(Capsule())
                 }
                 .padding(.horizontal, 12)
+            } else if appState.captureManager.isLowDiskSpacePaused {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color(red: 1.0, green: 0.65, blue: 0.15))
+                    
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Low Disk: Paused")
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundStyle(.white)
+                        if let bytes = appState.captureManager.availableDiskSpaceBytes {
+                            Text("Sisa \(bytes / (1024 * 1024)) MB")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.70))
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    // Resume button (Green)
+                    Button(action: {
+                        appState.togglePauseRecording()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 8, weight: .bold))
+                            Text("Resume")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4.5)
+                        .background(Color(red: 0.12, green: 0.68, blue: 0.38))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Lanjutkan perekaman setelah membersihkan disk")
+                    
+                    // Stop & Save button (Purple)
+                    Button(action: {
+                        appState.triggerStopRecording()
+                    }) {
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(Color.white)
+                                .frame(width: 7, height: 7)
+                            Text("Save")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4.5)
+                        .background(Color(red: 0.46, green: 0.36, blue: 0.98))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Simpan rekaman yang sudah ada")
+                    
+                    // Discard button
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showDiscardConfirm = true
+                        }
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(white: 0.65))
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Batal & hapus rekaman")
+                }
+                .padding(.horizontal, 10)
             } else {
                 HStack(spacing: 16) {
                     // 1. Trash Button (Discard current recording)
