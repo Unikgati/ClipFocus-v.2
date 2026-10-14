@@ -102,7 +102,7 @@ public struct EditorStudioView: View {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
-                        Image(systemName: "wand.and.stars")
+                        Image(systemName: "scissors.badge.ellipsis")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(Color(red: 0.65, green: 0.50, blue: 1.0))
                         Text(toast)
@@ -900,14 +900,14 @@ public struct EditorStudioView: View {
                     Button(action: {
                         showSmartTrimPopover = true
                     }) {
-                        Image(systemName: "wand.and.stars")
+                        Image(systemName: "scissors.badge.ellipsis")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Color(red: 0.65, green: 0.50, blue: 1.0))
                             .frame(width: 24, height: 24)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Smart Cut: Hapus jeda kursor diam otomatis (⇧⌘X)")
+                    .help("Auto-Trim Kursor Diam (⇧⌘X)")
                     .popover(isPresented: $showSmartTrimPopover, arrowEdge: .bottom) {
                         smartTrimPopoverView
                     }
@@ -1700,171 +1700,90 @@ public struct EditorStudioView: View {
         return String(format: "%02d:%02d.%02d", mins, secs, millis)
     }
     
-    // MARK: - Smart Trim Popover View
+    // MARK: - Smart Trim Popover View (Clean, Minimalist Apple Design)
     
     private var smartTrimPopoverView: some View {
         let cuts = appState.previewCursorInactivityCuts(threshold: smartTrimThreshold)
         let totalTrimmed = cuts.reduce(0.0) { $0 + $1.duration }
-        let newDuration = max(0.5, appState.totalDuration - totalTrimmed)
         
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 10) {
             // Header
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color(red: 0.55, green: 0.35, blue: 1.0), Color(red: 0.35, green: 0.20, blue: 0.85)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 32, height: 32)
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Smart Trim: Hapus Jeda Kursor")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Potong bagian video saat kursor diam & tidak ada ketikan")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.white.opacity(0.6))
-                }
+            HStack(spacing: 7) {
+                Image(systemName: "scissors.badge.ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.65, green: 0.50, blue: 1.0))
+                Text("Auto-Trim Kursor Diam")
+                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundStyle(.white)
             }
-            
-            Divider().overlay(Color.white.opacity(0.08))
             
             // Threshold selector
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Sensitivitas Diam (Batas Minimal):")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                    Spacer()
-                    Text(String(format: "%.1f detik", smartTrimThreshold))
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.cyan)
-                }
+            HStack(spacing: 6) {
+                Text("Jeda:")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
                 
+                ForEach([1.5, 2.0, 2.5, 3.0, 5.0], id: \.self) { val in
+                    Button(action: {
+                        smartTrimThreshold = val
+                    }) {
+                        Text(String(format: "%.1fs", val))
+                            .font(.system(size: 10.5, weight: smartTrimThreshold == val ? .bold : .medium, design: .rounded))
+                            .foregroundStyle(smartTrimThreshold == val ? .white : .white.opacity(0.65))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(
+                                smartTrimThreshold == val
+                                    ? Color(red: 0.46, green: 0.36, blue: 0.98)
+                                    : Color.white.opacity(0.07)
+                            )
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            
+            // Summary Card (Clean & Compact)
+            if cuts.isEmpty {
                 HStack(spacing: 6) {
-                    ForEach([1.5, 2.0, 2.5, 3.0, 5.0], id: \.self) { val in
-                        Button(action: {
-                            smartTrimThreshold = val
-                        }) {
-                            Text(String(format: "%.1fs", val))
-                                .font(.system(size: 10.5, weight: smartTrimThreshold == val ? .bold : .medium, design: .rounded))
-                                .foregroundStyle(smartTrimThreshold == val ? .white : Color.white.opacity(0.7))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(smartTrimThreshold == val ? Color(red: 0.46, green: 0.36, blue: 0.98) : Color.white.opacity(0.08))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.green)
+                    Text("Tidak ada jeda diam ≥ \(String(format: "%.1f", smartTrimThreshold))s")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.65))
                 }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+            } else {
+                HStack(spacing: 8) {
+                    Text("\(cuts.count) bagian diam")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("•")
+                        .foregroundStyle(.white.opacity(0.25))
+                    Text(String(format: "-%.1fs total", totalTrimmed))
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.45))
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
             }
             
-            // Real-Time Analysis Result Card
-            VStack(alignment: .leading, spacing: 8) {
-                if cuts.isEmpty {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Color.green)
-                        Text("Tidak ada jeda diam ≥ \(String(format: "%.1f", smartTrimThreshold))s. Seluruh kursor aktif!")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.8))
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.10)))
-                } else {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Ditemukan")
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.55))
-                            Text("\(cuts.count) Bagian")
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        Divider().frame(height: 24).overlay(Color.white.opacity(0.1))
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Dipangkas")
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.55))
-                            Text(String(format: "-%.1fs", totalTrimmed))
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.45))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        Divider().frame(height: 24).overlay(Color.white.opacity(0.1))
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Durasi Baru")
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.55))
-                            Text(formatDuration(newDuration))
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color(red: 0.20, green: 0.85, blue: 0.55))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-                    
-                    // List of detected cut ranges
-                    ScrollView {
-                        VStack(spacing: 4) {
-                            ForEach(Array(cuts.prefix(6).enumerated()), id: \.offset) { idx, seg in
-                                HStack {
-                                    Text("#\(idx + 1)")
-                                        .font(.system(size: 9.5, weight: .bold))
-                                        .foregroundStyle(Color.white.opacity(0.4))
-                                    Text("\(formatDuration(seg.startTime)) → \(formatDuration(seg.endTime))")
-                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(Color.white.opacity(0.85))
-                                    Spacer()
-                                    Text(String(format: "%.1fs", seg.duration))
-                                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                                        .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.45))
-                                }
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.03)))
-                            }
-                            if cuts.count > 6 {
-                                Text("...dan \(cuts.count - 6) bagian lainnya")
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(Color.white.opacity(0.4))
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 85)
-                }
-            }
-            
-            // Action Buttons
-            HStack(spacing: 10) {
+            // Actions
+            HStack(spacing: 8) {
                 Button("Batal") {
                     showSmartTrimPopover = false
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.75))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
                 
                 Spacer()
                 
@@ -1872,18 +1791,18 @@ public struct EditorStudioView: View {
                     let result = appState.applyCursorInactivityCuts(threshold: smartTrimThreshold)
                     showSmartTrimPopover = false
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        smartTrimToastMessage = "✂️ Berhasil memangkas \(result.cutCount) bagian jeda kursor (-\(String(format: "%.1f", result.trimmedSeconds))s)"
+                        smartTrimToastMessage = "✂️ Dipangkas \(result.cutCount) bagian (-\(String(format: "%.1f", result.trimmedSeconds))s)"
                     }
                 }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "scissors")
+                    HStack(spacing: 4) {
+                        Image(systemName: "scissors.badge.ellipsis")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(cuts.isEmpty ? "Potong" : "Potong \(cuts.count) Bagian")
                             .font(.system(size: 11, weight: .bold))
-                        Text("Terapkan Pemotongan")
-                            .font(.system(size: 11.5, weight: .bold))
                     }
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 5)
                     .background(
                         LinearGradient(
                             colors: [Color(red: 0.46, green: 0.36, blue: 0.98), Color(red: 0.36, green: 0.24, blue: 0.88)],
@@ -1895,19 +1814,12 @@ public struct EditorStudioView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(cuts.isEmpty)
-                .opacity(cuts.isEmpty ? 0.4 : 1.0)
+                .opacity(cuts.isEmpty ? 0.35 : 1.0)
             }
         }
-        .padding(14)
-        .frame(width: 320)
-        .background(Color(red: 0.11, green: 0.12, blue: 0.16))
-    }
-    
-    private func formatDuration(_ seconds: Double) -> String {
-        let total = Int(seconds)
-        let mins = total / 60
-        let secs = total % 60
-        return String(format: "%02d:%02d", mins, secs)
+        .padding(11)
+        .frame(width: 255)
+        .background(Color(red: 0.11, green: 0.12, blue: 0.15))
     }
 }
 
