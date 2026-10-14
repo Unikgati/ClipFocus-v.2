@@ -103,7 +103,7 @@ public final class SmartCutEngine: @unchecked Sendable {
         totalDuration: TimeInterval,
         minInactivityDuration: TimeInterval = 2.5,
         movementTolerance: CGFloat = 0.015,
-        paddingDuration: TimeInterval = 0.35
+        paddingDuration: TimeInterval = 0.70
     ) -> [TrimSegment] {
         guard totalDuration > minInactivityDuration, !events.isEmpty else { return [] }
         

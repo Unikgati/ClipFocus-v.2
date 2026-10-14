@@ -35,6 +35,7 @@ public struct EditorStudioView: View {
     @State private var showSmartTrimPopover: Bool = false
     @State private var smartTrimThreshold: Double = 2.5
     @State private var smartTrimToastMessage: String? = nil
+    @State private var cachedSmartTrimCuts: [TrimSegment] = []
     
     public init(appState: AppState) {
         self.appState = appState
@@ -898,6 +899,7 @@ public struct EditorStudioView: View {
                     
                     // Smart Cut / Auto-Trim Inactive Cursor
                     Button(action: {
+                        cachedSmartTrimCuts = appState.previewCursorInactivityCuts(threshold: smartTrimThreshold)
                         showSmartTrimPopover = true
                     }) {
                         Image(systemName: "scissors.badge.ellipsis")
@@ -1703,7 +1705,7 @@ public struct EditorStudioView: View {
     // MARK: - Smart Trim Popover View (Clean, Minimalist Apple Design)
     
     private var smartTrimPopoverView: some View {
-        let cuts = appState.previewCursorInactivityCuts(threshold: smartTrimThreshold)
+        let cuts = cachedSmartTrimCuts
         let totalTrimmed = cuts.reduce(0.0) { $0 + $1.duration }
         
         return VStack(alignment: .leading, spacing: 10) {
@@ -1726,6 +1728,7 @@ public struct EditorStudioView: View {
                 ForEach([1.5, 2.0, 2.5, 3.0, 5.0], id: \.self) { val in
                     Button(action: {
                         smartTrimThreshold = val
+                        cachedSmartTrimCuts = appState.previewCursorInactivityCuts(threshold: val)
                     }) {
                         Text(String(format: "%.1fs", val))
                             .font(.system(size: 10.5, weight: smartTrimThreshold == val ? .bold : .medium, design: .rounded))
@@ -1820,6 +1823,9 @@ public struct EditorStudioView: View {
         .padding(11)
         .frame(width: 255)
         .background(Color(red: 0.11, green: 0.12, blue: 0.15))
+        .onAppear {
+            cachedSmartTrimCuts = appState.previewCursorInactivityCuts(threshold: smartTrimThreshold)
+        }
     }
 }
 
