@@ -32,6 +32,9 @@ public struct EditorStudioView: View {
     @State private var gestureMonitor: Any? = nil
     @State private var isHoveringTimelineArea: Bool = false
     @State private var marqueeRect: CGRect? = nil
+    @State private var showSmartTrimPopover: Bool = false
+    @State private var smartTrimThreshold: Double = 2.5
+    @State private var smartTrimToastMessage: String? = nil
     
     public init(appState: AppState) {
         self.appState = appState
@@ -92,6 +95,39 @@ public struct EditorStudioView: View {
             // Exporting Modal Overlay
             if appState.isExporting {
                 exportingModal
+            }
+            
+            // Smart Trim Toast Overlay
+            if let toast = smartTrimToastMessage {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color(red: 0.65, green: 0.50, blue: 1.0))
+                        Text(toast)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule()
+                            .fill(Color(red: 0.12, green: 0.13, blue: 0.18).opacity(0.96))
+                            .shadow(color: .black.opacity(0.6), radius: 12, y: 4)
+                            .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    )
+                    .padding(.bottom, timelineHeight + 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                .zIndex(200)
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            smartTrimToastMessage = nil
+                        }
+                    }
+                }
             }
         }
         .ignoresSafeArea()
@@ -165,6 +201,13 @@ public struct EditorStudioView: View {
                     case 11: // B key with Cmd (Cmd+B) -> Razor Cut / Split at Playhead
                         if event.modifierFlags.contains(.command) {
                             appState.splitAtCurrentTime()
+                            return nil
+                        }
+                    case 7: // X key with Cmd+Shift -> Smart Cut Popover (Auto-Trim Inactive Cursor)
+                        if event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showSmartTrimPopover.toggle()
+                            }
                             return nil
                         }
                     case 6: // Z key with Cmd (Cmd+Z = Undo, Cmd+Shift+Z = Redo)
@@ -852,6 +895,22 @@ public struct EditorStudioView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Split clip at playhead (⌘B)")
+                    
+                    // Smart Cut / Auto-Trim Inactive Cursor
+                    Button(action: {
+                        showSmartTrimPopover = true
+                    }) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color(red: 0.65, green: 0.50, blue: 1.0))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Smart Cut: Hapus jeda kursor diam otomatis (⇧⌘X)")
+                    .popover(isPresented: $showSmartTrimPopover, arrowEdge: .bottom) {
+                        smartTrimPopoverView
+                    }
                     
                     // Delete Selected Item
                     let hasSelection = appState.selectedSegmentID != nil || appState.selectedKeyframeID != nil
@@ -1639,6 +1698,216 @@ public struct EditorStudioView: View {
         let secs = Int(seconds) % 60
         let millis = Int((seconds.truncatingRemainder(dividingBy: 1)) * 100)
         return String(format: "%02d:%02d.%02d", mins, secs, millis)
+    }
+    
+    // MARK: - Smart Trim Popover View
+    
+    private var smartTrimPopoverView: some View {
+        let cuts = appState.previewCursorInactivityCuts(threshold: smartTrimThreshold)
+        let totalTrimmed = cuts.reduce(0.0) { $0 + $1.duration }
+        let newDuration = max(0.5, appState.totalDuration - totalTrimmed)
+        
+        return VStack(alignment: .leading, spacing: 14) {
+            // Header
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(red: 0.55, green: 0.35, blue: 1.0), Color(red: 0.35, green: 0.20, blue: 0.85)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 32, height: 32)
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Smart Trim: Hapus Jeda Kursor")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Potong bagian video saat kursor diam & tidak ada ketikan")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.white.opacity(0.6))
+                }
+            }
+            
+            Divider().overlay(Color.white.opacity(0.08))
+            
+            // Threshold selector
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Sensitivitas Diam (Batas Minimal):")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                    Spacer()
+                    Text(String(format: "%.1f detik", smartTrimThreshold))
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.cyan)
+                }
+                
+                HStack(spacing: 6) {
+                    ForEach([1.5, 2.0, 2.5, 3.0, 5.0], id: \.self) { val in
+                        Button(action: {
+                            smartTrimThreshold = val
+                        }) {
+                            Text(String(format: "%.1fs", val))
+                                .font(.system(size: 10.5, weight: smartTrimThreshold == val ? .bold : .medium, design: .rounded))
+                                .foregroundStyle(smartTrimThreshold == val ? .white : Color.white.opacity(0.7))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(smartTrimThreshold == val ? Color(red: 0.46, green: 0.36, blue: 0.98) : Color.white.opacity(0.08))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            
+            // Real-Time Analysis Result Card
+            VStack(alignment: .leading, spacing: 8) {
+                if cuts.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.green)
+                        Text("Tidak ada jeda diam ≥ \(String(format: "%.1f", smartTrimThreshold))s. Seluruh kursor aktif!")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.8))
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.10)))
+                } else {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Ditemukan")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.55))
+                            Text("\(cuts.count) Bagian")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        Divider().frame(height: 24).overlay(Color.white.opacity(0.1))
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Dipangkas")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.55))
+                            Text(String(format: "-%.1fs", totalTrimmed))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.45))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        Divider().frame(height: 24).overlay(Color.white.opacity(0.1))
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Durasi Baru")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.55))
+                            Text(formatDuration(newDuration))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color(red: 0.20, green: 0.85, blue: 0.55))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+                    
+                    // List of detected cut ranges
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(Array(cuts.prefix(6).enumerated()), id: \.offset) { idx, seg in
+                                HStack {
+                                    Text("#\(idx + 1)")
+                                        .font(.system(size: 9.5, weight: .bold))
+                                        .foregroundStyle(Color.white.opacity(0.4))
+                                    Text("\(formatDuration(seg.startTime)) → \(formatDuration(seg.endTime))")
+                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(Color.white.opacity(0.85))
+                                    Spacer()
+                                    Text(String(format: "%.1fs", seg.duration))
+                                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                                        .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.45))
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.03)))
+                            }
+                            if cuts.count > 6 {
+                                Text("...dan \(cuts.count - 6) bagian lainnya")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(Color.white.opacity(0.4))
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 85)
+                }
+            }
+            
+            // Action Buttons
+            HStack(spacing: 10) {
+                Button("Batal") {
+                    showSmartTrimPopover = false
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.75))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                
+                Spacer()
+                
+                Button(action: {
+                    let result = appState.applyCursorInactivityCuts(threshold: smartTrimThreshold)
+                    showSmartTrimPopover = false
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        smartTrimToastMessage = "✂️ Berhasil memangkas \(result.cutCount) bagian jeda kursor (-\(String(format: "%.1f", result.trimmedSeconds))s)"
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "scissors")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Terapkan Pemotongan")
+                            .font(.system(size: 11.5, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        LinearGradient(
+                            colors: [Color(red: 0.46, green: 0.36, blue: 0.98), Color(red: 0.36, green: 0.24, blue: 0.88)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .disabled(cuts.isEmpty)
+                .opacity(cuts.isEmpty ? 0.4 : 1.0)
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
+        .background(Color(red: 0.11, green: 0.12, blue: 0.16))
+    }
+    
+    private func formatDuration(_ seconds: Double) -> String {
+        let total = Int(seconds)
+        let mins = total / 60
+        let secs = total % 60
+        return String(format: "%02d:%02d", mins, secs)
     }
 }
 

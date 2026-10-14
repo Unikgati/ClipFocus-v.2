@@ -563,6 +563,7 @@ public final class AppState: @unchecked Sendable {
     }
     public let captureManager = CaptureManager.shared
     private let autoZoomEngine = AutoZoomEngine()
+    private let smartCutEngine = SmartCutEngine()
     private var timeObserverToken: Any?
     private var playbackDisplayTimer: Timer?
     private var cachedSourceAsset: AVURLAsset? = nil
@@ -2133,6 +2134,141 @@ public final class AppState: @unchecked Sendable {
             rebuildPlaybackComposition(maintainPlayhead: true)
         }
         syncPlaybackToCurrentTime(accurate: true)
+    }
+    
+    // MARK: - Smart Trim / Inactive Cursor Auto-Cutter
+    
+    /// Previews inactive cursor segments that can be automatically trimmed
+    public func previewCursorInactivityCuts(threshold: TimeInterval = 2.5) -> [TrimSegment] {
+        let sourceDur = videoSegments.map { $0.sourceEndTime }.max() ?? self.totalDuration
+        return smartCutEngine.detectCursorInactivity(
+            events: self.telemetryEvents,
+            totalDuration: max(1.0, sourceDur),
+            minInactivityDuration: threshold
+        )
+    }
+    
+    /// Automatically cuts out stationary/idle cursor intervals, ripples timeline, and shifts zoom keyframes
+    @discardableResult
+    public func applyCursorInactivityCuts(threshold: TimeInterval = 2.5) -> (cutCount: Int, trimmedSeconds: Double) {
+        let sourceDur = videoSegments.map { $0.sourceEndTime }.max() ?? self.totalDuration
+        let cuts = smartCutEngine.detectCursorInactivity(
+            events: self.telemetryEvents,
+            totalDuration: max(1.0, sourceDur),
+            minInactivityDuration: threshold
+        )
+        guard !cuts.isEmpty else { return (0, 0.0) }
+        
+        recordUndoState()
+        
+        let sortedCuts = cuts.sorted { $0.startTime < $1.startTime }
+        
+        func cutSegments(_ segments: [MediaClipSegment]) -> [MediaClipSegment] {
+            var resultPieces: [(sourceStart: TimeInterval, duration: TimeInterval, orig: MediaClipSegment)] = []
+            
+            for seg in segments {
+                var activeIntervals: [(start: TimeInterval, end: TimeInterval)] = [(seg.sourceStartTime, seg.sourceEndTime)]
+                
+                for cut in sortedCuts {
+                    var nextIntervals: [(start: TimeInterval, end: TimeInterval)] = []
+                    for interval in activeIntervals {
+                        if cut.endTime <= interval.start || cut.startTime >= interval.end {
+                            nextIntervals.append(interval)
+                        } else {
+                            if cut.startTime > interval.start {
+                                nextIntervals.append((interval.start, cut.startTime))
+                            }
+                            if cut.endTime < interval.end {
+                                nextIntervals.append((cut.endTime, interval.end))
+                            }
+                        }
+                    }
+                    activeIntervals = nextIntervals
+                }
+                
+                for interval in activeIntervals {
+                    let dur = interval.end - interval.start
+                    if dur >= 0.1 {
+                        resultPieces.append((interval.start, dur, seg))
+                    }
+                }
+            }
+            
+            var finalSegments: [MediaClipSegment] = []
+            var currentTimelineTime: TimeInterval = 0.0
+            
+            for piece in resultPieces {
+                let s = MediaClipSegment(
+                    id: UUID(),
+                    name: piece.orig.name,
+                    sourceStartTime: piece.sourceStart,
+                    timelineStartTime: currentTimelineTime,
+                    duration: piece.duration,
+                    isMuted: piece.orig.isMuted,
+                    volume: piece.orig.volume
+                )
+                finalSegments.append(s)
+                currentTimelineTime += piece.duration
+            }
+            return finalSegments
+        }
+        
+        let oldDuration = self.totalDuration
+        let newVideo = cutSegments(self.videoSegments)
+        let newAudio = cutSegments(self.audioSegments)
+        
+        guard !newVideo.isEmpty else { return (0, 0.0) }
+        
+        func mapSourceTimeToNewTimeline(_ srcTime: TimeInterval) -> TimeInterval? {
+            for seg in newVideo {
+                if srcTime >= seg.sourceStartTime && srcTime < seg.sourceEndTime {
+                    let offset = srcTime - seg.sourceStartTime
+                    return seg.timelineStartTime + offset
+                }
+            }
+            return nil
+        }
+        
+        var newKeyframes: [ZoomKeyframe] = []
+        for kf in self.zoomKeyframes {
+            guard let origSeg = self.videoSegments.first(where: { kf.startTime >= $0.timelineStartTime && kf.startTime < $0.timelineEndTime }) else {
+                continue
+            }
+            let kfSourceStart = origSeg.sourceStartTime + (kf.startTime - origSeg.timelineStartTime)
+            let kfSourceEnd = kfSourceStart + kf.duration
+            
+            if let newTimelineStart = mapSourceTimeToNewTimeline(kfSourceStart) {
+                let mappedEnd = mapSourceTimeToNewTimeline(kfSourceEnd) ?? (newTimelineStart + kf.duration)
+                let newDur = max(0.2, min(kf.duration, mappedEnd - newTimelineStart))
+                var updatedKF = kf
+                updatedKF.startTime = newTimelineStart
+                updatedKF.duration = newDur
+                newKeyframes.append(updatedKF)
+            }
+        }
+        
+        self.videoSegments = newVideo
+        self.audioSegments = newAudio
+        self.zoomKeyframes = newKeyframes
+        
+        let maxV = newVideo.map { $0.timelineEndTime }.max() ?? 0.0
+        let maxA = newAudio.map { $0.timelineEndTime }.max() ?? 0.0
+        let maxK = newKeyframes.map { $0.startTime + $0.duration }.max() ?? 0.0
+        self.totalDuration = max(1.0, max(maxV, max(maxA, maxK)))
+        
+        let trimmed = max(0.0, oldDuration - self.totalDuration)
+        
+        self.selectedSegmentIDs.removeAll()
+        self.selectedSegmentID = nil
+        self.selectedKeyframeID = nil
+        self.currentTime = 0.0
+        self.isDirty = true
+        
+        evaluateCurrentZoom()
+        rebuildPlaybackComposition(maintainPlayhead: false)
+        syncPlaybackToCurrentTime(accurate: true)
+        
+        return (cuts.count, trimmed)
     }
     
     // MARK: - Trimming & Repositioning for Video & Audio Segments
